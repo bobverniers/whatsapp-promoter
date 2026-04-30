@@ -168,10 +168,14 @@ function LoginScreen({ onLogin }: { onLogin: () => void }) {
 
 // ─── Groups Tab ──────────────────────────────────────────────────────────────
 
+type Banner = { kind: "success" | "info" | "error"; text: string };
+
 function GroupsTab() {
   const [groups, setGroups] = useState<Group[]>([]);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [banner, setBanner] = useState<Banner | null>(null);
   const [filter, setFilter] = useState("all");
 
   const fetchGroups = useCallback(async () => {
@@ -198,6 +202,48 @@ function GroupsTab() {
     await api("/api/sync-groups", { method: "POST" });
     await fetchGroups();
     setSyncing(false);
+  }
+
+  function showBanner(b: Banner) {
+    setBanner(b);
+    setTimeout(() => {
+      setBanner((prev) => (prev === b ? null : prev));
+    }, 6000);
+  }
+
+  async function handleSendNext() {
+    setSending(true);
+    setBanner(null);
+    try {
+      const res = await api("/api/promote", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        showBanner({
+          kind: "error",
+          text: data.details
+            ? `${data.error}: ${data.details}`
+            : data.error ?? "Send failed",
+        });
+      } else if (data.sent) {
+        const name = data.group?.name ?? data.group?.whapi_id ?? "group";
+        showBanner({
+          kind: "success",
+          text: `Sent to ${name} (${data.group?.tag}) using template ${data.template?.id?.slice(0, 8)}…`,
+        });
+        await fetchGroups();
+      } else if (data.skipped) {
+        showBanner({ kind: "info", text: `Skipped: ${data.reason}` });
+      } else {
+        showBanner({ kind: "info", text: "No action taken" });
+      }
+    } catch (err) {
+      showBanner({
+        kind: "error",
+        text: err instanceof Error ? err.message : "Network error",
+      });
+    } finally {
+      setSending(false);
+    }
   }
 
   async function updateGroup(id: string, updates: Partial<Group>) {
@@ -264,14 +310,37 @@ function GroupsTab() {
             </button>
           ))}
         </div>
-        <button
-          onClick={handleSync}
-          disabled={syncing}
-          className="rounded-lg bg-emerald-600 px-4 py-1.5 text-sm font-medium text-white transition hover:bg-emerald-500 disabled:opacity-50"
-        >
-          {syncing ? "Syncing..." : "Sync Now"}
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={handleSendNext}
+            disabled={sending}
+            className="rounded-lg bg-blue-600 px-4 py-1.5 text-sm font-medium text-white transition hover:bg-blue-500 disabled:opacity-50"
+          >
+            {sending ? "Sending..." : "Send next message"}
+          </button>
+          <button
+            onClick={handleSync}
+            disabled={syncing}
+            className="rounded-lg bg-emerald-600 px-4 py-1.5 text-sm font-medium text-white transition hover:bg-emerald-500 disabled:opacity-50"
+          >
+            {syncing ? "Syncing..." : "Sync Now"}
+          </button>
+        </div>
       </div>
+
+      {banner && (
+        <div
+          className={`mb-4 rounded-lg border px-4 py-2.5 text-sm ${
+            banner.kind === "success"
+              ? "border-emerald-900/50 bg-emerald-900/20 text-emerald-300"
+              : banner.kind === "error"
+              ? "border-red-900/50 bg-red-900/20 text-red-300"
+              : "border-zinc-800 bg-zinc-900/40 text-zinc-300"
+          }`}
+        >
+          {banner.text}
+        </div>
+      )}
 
       {loading ? (
         <p className="py-8 text-center text-zinc-500">Loading groups...</p>
