@@ -15,13 +15,6 @@ interface Group {
   status_notes: string | null;
 }
 
-interface Link {
-  id: string;
-  tag: string;
-  current_url: string;
-  updated_at: string;
-}
-
 interface Template {
   id: string;
   content: string;
@@ -450,163 +443,19 @@ function GroupsTab() {
   );
 }
 
-// ─── Links Tab ───────────────────────────────────────────────────────────────
-
-function LinksTab() {
-  const [links, setLinks] = useState<Link[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [newTag, setNewTag] = useState("");
-  const [newUrl, setNewUrl] = useState("");
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editUrl, setEditUrl] = useState("");
-
-  const fetchLinks = useCallback(async () => {
-    setLoading(true);
-    const res = await api("/api/links");
-    if (res.ok) setLinks(await res.json());
-    setLoading(false);
-  }, []);
-
-  useEffect(() => {
-    fetchLinks();
-  }, [fetchLinks]);
-
-  async function handleAdd(e: React.FormEvent) {
-    e.preventDefault();
-    if (!newTag || !newUrl) return;
-    const res = await api("/api/links", {
-      method: "POST",
-      body: JSON.stringify({ tag: newTag, current_url: newUrl }),
-    });
-    if (res.ok) {
-      setNewTag("");
-      setNewUrl("");
-      fetchLinks();
-    }
-  }
-
-  async function handleSave(id: string) {
-    const res = await api("/api/links", {
-      method: "PATCH",
-      body: JSON.stringify({ id, current_url: editUrl }),
-    });
-    if (res.ok) {
-      setEditingId(null);
-      fetchLinks();
-    }
-  }
-
-  return (
-    <div>
-      <form
-        onSubmit={handleAdd}
-        className="mb-6 flex flex-wrap gap-3 rounded-xl border border-zinc-800 bg-zinc-900/50 p-4"
-      >
-        <input
-          placeholder="Tag name"
-          value={newTag}
-          onChange={(e) => setNewTag(e.target.value)}
-          className="w-36 rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-200 placeholder-zinc-500 outline-none focus:border-blue-500"
-        />
-        <input
-          placeholder="Community invite URL"
-          value={newUrl}
-          onChange={(e) => setNewUrl(e.target.value)}
-          className="flex-1 min-w-[200px] rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-200 placeholder-zinc-500 outline-none focus:border-blue-500"
-        />
-        <button
-          type="submit"
-          className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-500"
-        >
-          Add Link
-        </button>
-      </form>
-
-      {loading ? (
-        <p className="py-8 text-center text-zinc-500">Loading links...</p>
-      ) : links.length === 0 ? (
-        <p className="py-8 text-center text-zinc-500">
-          No community links yet. Add one above.
-        </p>
-      ) : (
-        <div className="grid gap-4 sm:grid-cols-2">
-          {links.map((link) => (
-            <div
-              key={link.id}
-              className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-5"
-            >
-              <div className="mb-3 flex items-center justify-between">
-                <span className="rounded-md bg-blue-600/20 px-2.5 py-0.5 text-sm font-semibold text-blue-400">
-                  {link.tag}
-                </span>
-                <span className="text-xs text-zinc-500">
-                  Updated {new Date(link.updated_at).toLocaleDateString()}
-                </span>
-              </div>
-              {editingId === link.id ? (
-                <div className="flex gap-2">
-                  <input
-                    value={editUrl}
-                    onChange={(e) => setEditUrl(e.target.value)}
-                    className="flex-1 rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-200 outline-none focus:border-blue-500"
-                  />
-                  <button
-                    onClick={() => handleSave(link.id)}
-                    className="rounded-lg bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-500"
-                  >
-                    Save
-                  </button>
-                  <button
-                    onClick={() => setEditingId(null)}
-                    className="rounded-lg bg-zinc-700 px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-600"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              ) : (
-                <div className="flex items-center justify-between gap-2">
-                  <p className="truncate text-sm text-zinc-300">
-                    {link.current_url}
-                  </p>
-                  <button
-                    onClick={() => {
-                      setEditingId(link.id);
-                      setEditUrl(link.current_url);
-                    }}
-                    className="shrink-0 rounded-lg bg-zinc-800 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:bg-zinc-700"
-                  >
-                    Edit
-                  </button>
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 // ─── Templates Tab ───────────────────────────────────────────────────────────
 
 function TemplatesTab() {
   const [templates, setTemplates] = useState<Template[]>([]);
-  const [groups, setGroups] = useState<Group[]>([]);
   const [loading, setLoading] = useState(true);
   const [newContent, setNewContent] = useState("");
-  const [newTag, setNewTag] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editContent, setEditContent] = useState("");
-  const [editTag, setEditTag] = useState("");
 
   const fetchData = useCallback(async () => {
     setLoading(true);
-    const [tRes, gRes] = await Promise.all([
-      api("/api/templates"),
-      api("/api/groups"),
-    ]);
+    const tRes = await api("/api/templates");
     if (tRes.ok) setTemplates(await tRes.json());
-    if (gRes.ok) setGroups(await gRes.json());
     setLoading(false);
   }, []);
 
@@ -614,27 +463,15 @@ function TemplatesTab() {
     fetchData();
   }, [fetchData]);
 
-  const knownTags = useMemo(() => {
-    const tags = new Set<string>();
-    for (const g of groups) {
-      if (g.tag) tags.add(g.tag);
-    }
-    for (const t of templates) {
-      if (t.tag) tags.add(t.tag);
-    }
-    return Array.from(tags).sort();
-  }, [groups, templates]);
-
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault();
     if (!newContent) return;
     const res = await api("/api/templates", {
       method: "POST",
-      body: JSON.stringify({ content: newContent, tag: newTag || null }),
+      body: JSON.stringify({ content: newContent }),
     });
     if (res.ok) {
       setNewContent("");
-      setNewTag("");
       fetchData();
     }
   }
@@ -645,7 +482,6 @@ function TemplatesTab() {
       body: JSON.stringify({
         id,
         content: editContent,
-        tag: editTag || null,
       }),
     });
     if (res.ok) {
@@ -670,26 +506,21 @@ function TemplatesTab() {
         className="mb-6 rounded-xl border border-zinc-800 bg-zinc-900/50 p-4"
       >
         <textarea
-          placeholder='Write a message template... Use {{link}} for the invite link, e.g. "Hey! Looking for housing in Amsterdam? Join us: {{link}}"'
+          placeholder='Write a message template for rotation, e.g. "Hey! We have a new housing channel this week..."'
           value={newContent}
           onChange={(e) => setNewContent(e.target.value)}
           rows={3}
           className="mb-3 w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-200 placeholder-zinc-500 outline-none focus:border-blue-500"
         />
-        <div className="flex gap-3">
-          <TagInput
-            value={newTag}
-            knownTags={knownTags}
-            onChange={setNewTag}
-            className="w-48"
-          />
-          <button
-            type="submit"
-            className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-500"
-          >
-            Add Template
-          </button>
-        </div>
+        <p className="mb-3 text-xs text-zinc-500">
+          Keep a global pool of 10-15 messages. Tags are disabled in this MVP.
+        </p>
+        <button
+          type="submit"
+          className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-500"
+        >
+          Add Template
+        </button>
       </form>
 
       {loading ? (
@@ -714,12 +545,6 @@ function TemplatesTab() {
                     className="mb-3 w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-200 outline-none focus:border-blue-500"
                   />
                   <div className="flex gap-2">
-                    <TagInput
-                      value={editTag}
-                      knownTags={knownTags}
-                      onChange={setEditTag}
-                      className="w-48"
-                    />
                     <button
                       onClick={() => handleSave(t.id)}
                       className="rounded-lg bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-500"
@@ -745,7 +570,6 @@ function TemplatesTab() {
                         onClick={() => {
                           setEditingId(t.id);
                           setEditContent(t.content);
-                          setEditTag(t.tag ?? "");
                         }}
                         className="rounded-lg bg-zinc-800 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:bg-zinc-700"
                       >
@@ -760,11 +584,6 @@ function TemplatesTab() {
                     </div>
                   </div>
                   <div className="flex gap-4 text-xs text-zinc-500">
-                    {t.tag && (
-                      <span className="rounded-md bg-blue-600/20 px-2 py-0.5 font-medium text-blue-400">
-                        {t.tag}
-                      </span>
-                    )}
                     <span>Used {t.use_count}x</span>
                     {t.last_used_at && (
                       <span>
@@ -787,6 +606,7 @@ function TemplatesTab() {
 
 export default function Home() {
   const [authed, setAuthed] = useState(false);
+  const [tab, setTab] = useState<"groups" | "templates">("groups");
 
   useEffect(() => {
     if (sessionStorage.getItem("admin_pw")) {
@@ -816,7 +636,31 @@ export default function Home() {
       </header>
 
       <div className="mx-auto max-w-6xl px-6 py-6">
-        <GroupsTab />
+        <nav className="mb-6 flex gap-1 rounded-xl bg-zinc-900/50 p-1">
+          <button
+            onClick={() => setTab("groups")}
+            className={`flex-1 rounded-lg py-2.5 text-sm font-medium transition ${
+              tab === "groups"
+                ? "bg-zinc-800 text-zinc-100"
+                : "text-zinc-500 hover:text-zinc-300"
+            }`}
+          >
+            Groups
+          </button>
+          <button
+            onClick={() => setTab("templates")}
+            className={`flex-1 rounded-lg py-2.5 text-sm font-medium transition ${
+              tab === "templates"
+                ? "bg-zinc-800 text-zinc-100"
+                : "text-zinc-500 hover:text-zinc-300"
+            }`}
+          >
+            Templates
+          </button>
+        </nav>
+
+        {tab === "groups" && <GroupsTab />}
+        {tab === "templates" && <TemplatesTab />}
       </div>
     </div>
   );

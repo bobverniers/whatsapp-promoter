@@ -21,7 +21,7 @@ export async function POST(request: Request) {
   const denied = checkAuth(request);
   if (denied) return denied;
 
-  const { content, tag } = await request.json();
+  const { content } = await request.json();
 
   if (!content) {
     return NextResponse.json(
@@ -30,9 +30,25 @@ export async function POST(request: Request) {
     );
   }
 
+  const { count, error: countError } = await supabase
+    .from("promo_templates")
+    .select("id", { count: "exact", head: true })
+    .is("tag", null);
+
+  if (countError) {
+    return NextResponse.json({ error: countError.message }, { status: 500 });
+  }
+
+  if ((count ?? 0) >= 15) {
+    return NextResponse.json(
+      { error: "Global template limit reached (15)" },
+      { status: 400 }
+    );
+  }
+
   const { data, error } = await supabase
     .from("promo_templates")
-    .insert({ content, tag: tag || null })
+    .insert({ content, tag: null })
     .select()
     .single();
 
@@ -46,7 +62,7 @@ export async function PATCH(request: Request) {
   const denied = checkAuth(request);
   if (denied) return denied;
 
-  const { id, content, tag } = await request.json();
+  const { id, content } = await request.json();
 
   if (!id) {
     return NextResponse.json({ error: "id is required" }, { status: 400 });
@@ -54,7 +70,7 @@ export async function PATCH(request: Request) {
 
   const updates: Record<string, unknown> = {};
   if (content !== undefined) updates.content = content;
-  if (tag !== undefined) updates.tag = tag || null;
+  updates.tag = null;
 
   const { data, error } = await supabase
     .from("promo_templates")
