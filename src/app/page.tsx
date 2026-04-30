@@ -174,9 +174,10 @@ function GroupsTab() {
   const [groups, setGroups] = useState<Group[]>([]);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
-  const [sending, setSending] = useState(false);
   const [banner, setBanner] = useState<Banner | null>(null);
   const [filter, setFilter] = useState("all");
+  const [testSendingId, setTestSendingId] = useState<string | null>(null);
+  const [testMessage, setTestMessage] = useState("");
 
   const fetchGroups = useCallback(async () => {
     setLoading(true);
@@ -211,24 +212,58 @@ function GroupsTab() {
     }, 6000);
   }
 
-  async function handleSendNext() {
-    setSending(true);
+  async function updateGroup(id: string, updates: Partial<Group>) {
+    const res = await api("/api/groups", {
+      method: "PATCH",
+      body: JSON.stringify({ id, ...updates }),
+    });
+    if (res.ok) {
+      const updated = await res.json();
+      setGroups((prev) => prev.map((g) => (g.id === id ? updated : g)));
+    }
+  }
+
+  async function handleTestSend(g: Group) {
+    if (!testMessage.trim()) {
+      showBanner({
+        kind: "info",
+        text: "Enter a test message first",
+      });
+      return;
+    }
+
+    const label = g.name || g.whapi_id;
+    const tagLine = g.tag ? `Tag: ${g.tag}` : "Tag: none";
+    if (
+      !confirm(
+        `Send ONE test WhatsApp message to this group?\n\n${label}\n${tagLine}\n\nMessage preview:\n${testMessage}\n\nThis bypasses warmup/cooldown. Continue?`
+      )
+    ) {
+      return;
+    }
+
+    const body = { group_id: g.id, message: testMessage.trim() };
+
+    setTestSendingId(g.id);
     setBanner(null);
     try {
-      const res = await api("/api/promote", { method: "POST" });
+      const res = await api("/api/promote-test", {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
       const data = await res.json();
       if (!res.ok) {
         showBanner({
           kind: "error",
           text: data.details
             ? `${data.error}: ${data.details}`
-            : data.error ?? "Send failed",
+            : data.error ?? "Test send failed",
         });
       } else if (data.sent) {
         const name = data.group?.name ?? data.group?.whapi_id ?? "group";
         showBanner({
           kind: "success",
-          text: `Sent to ${name} (${data.group?.tag}) using template ${data.template?.id?.slice(0, 8)}…`,
+          text: `[Test] Sent to ${name}${data.group?.tag ? ` (${data.group.tag})` : ""}`,
         });
         await fetchGroups();
       } else if (data.skipped) {
@@ -242,18 +277,7 @@ function GroupsTab() {
         text: err instanceof Error ? err.message : "Network error",
       });
     } finally {
-      setSending(false);
-    }
-  }
-
-  async function updateGroup(id: string, updates: Partial<Group>) {
-    const res = await api("/api/groups", {
-      method: "PATCH",
-      body: JSON.stringify({ id, ...updates }),
-    });
-    if (res.ok) {
-      const updated = await res.json();
-      setGroups((prev) => prev.map((g) => (g.id === id ? updated : g)));
+      setTestSendingId(null);
     }
   }
 
@@ -312,13 +336,6 @@ function GroupsTab() {
         </div>
         <div className="flex gap-2">
           <button
-            onClick={handleSendNext}
-            disabled={sending}
-            className="rounded-lg bg-blue-600 px-4 py-1.5 text-sm font-medium text-white transition hover:bg-blue-500 disabled:opacity-50"
-          >
-            {sending ? "Sending..." : "Send next message"}
-          </button>
-          <button
             onClick={handleSync}
             disabled={syncing}
             className="rounded-lg bg-emerald-600 px-4 py-1.5 text-sm font-medium text-white transition hover:bg-emerald-500 disabled:opacity-50"
@@ -326,6 +343,19 @@ function GroupsTab() {
             {syncing ? "Syncing..." : "Sync Now"}
           </button>
         </div>
+      </div>
+
+      <div className="mb-4 rounded-xl border border-amber-800/60 bg-amber-950/20 p-3">
+        <label className="mb-2 block text-sm text-amber-200">
+          Test message text (used by row-level Test buttons)
+        </label>
+        <textarea
+          value={testMessage}
+          onChange={(e) => setTestMessage(e.target.value)}
+          rows={3}
+          placeholder="Write the exact message to send to one selected group..."
+          className="w-full rounded-md border border-amber-800/50 bg-zinc-900 px-3 py-2 text-sm text-zinc-200 outline-none focus:border-amber-600"
+        />
       </div>
 
       {banner && (
@@ -354,6 +384,7 @@ function GroupsTab() {
                 <th className="px-4 py-3 font-medium">Joined</th>
                 <th className="px-4 py-3 font-medium">Last Promoted</th>
                 <th className="px-4 py-3 font-medium">Active</th>
+                <th className="px-4 py-3 font-medium">Test</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-800">
@@ -392,6 +423,16 @@ function GroupsTab() {
                       }`}
                     >
                       {g.is_active ? "Active" : "Inactive"}
+                    </button>
+                  </td>
+                  <td className="px-4 py-3">
+                    <button
+                      type="button"
+                      onClick={() => handleTestSend(g)}
+                      disabled={testSendingId !== null}
+                      className="rounded-lg bg-amber-700/80 px-2.5 py-1 text-xs font-medium text-amber-100 transition hover:bg-amber-600 disabled:opacity-50"
+                    >
+                      {testSendingId === g.id ? "Sending..." : "Test"}
                     </button>
                   </td>
                 </tr>
@@ -744,11 +785,8 @@ function TemplatesTab() {
 
 // ─── Main App ────────────────────────────────────────────────────────────────
 
-type Tab = "groups" | "links" | "templates";
-
 export default function Home() {
   const [authed, setAuthed] = useState(false);
-  const [tab, setTab] = useState<Tab>("groups");
 
   useEffect(() => {
     if (sessionStorage.getItem("admin_pw")) {
@@ -759,12 +797,6 @@ export default function Home() {
   if (!authed) {
     return <LoginScreen onLogin={() => setAuthed(true)} />;
   }
-
-  const tabs: { id: Tab; label: string }[] = [
-    { id: "groups", label: "Groups" },
-    { id: "links", label: "Community Links" },
-    { id: "templates", label: "Templates" },
-  ];
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100">
@@ -784,25 +816,7 @@ export default function Home() {
       </header>
 
       <div className="mx-auto max-w-6xl px-6 py-6">
-        <nav className="mb-6 flex gap-1 rounded-xl bg-zinc-900/50 p-1">
-          {tabs.map((t) => (
-            <button
-              key={t.id}
-              onClick={() => setTab(t.id)}
-              className={`flex-1 rounded-lg py-2.5 text-sm font-medium transition ${
-                tab === t.id
-                  ? "bg-zinc-800 text-zinc-100"
-                  : "text-zinc-500 hover:text-zinc-300"
-              }`}
-            >
-              {t.label}
-            </button>
-          ))}
-        </nav>
-
-        {tab === "groups" && <GroupsTab />}
-        {tab === "links" && <LinksTab />}
-        {tab === "templates" && <TemplatesTab />}
+        <GroupsTab />
       </div>
     </div>
   );

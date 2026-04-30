@@ -19,11 +19,28 @@ export async function POST(request: Request) {
     );
   }
 
+  let payload: unknown = {};
+  try {
+    payload = await request.json();
+  } catch {
+    payload = {};
+  }
+
+  const parsed = payload as { tag?: unknown; template_id?: unknown };
+  const scopedTag =
+    typeof parsed.tag === "string" && parsed.tag.trim()
+      ? parsed.tag.trim()
+      : null;
+  const selectedTemplateId =
+    typeof parsed.template_id === "string" && parsed.template_id.trim()
+      ? parsed.template_id.trim()
+      : null;
+
   const now = new Date();
   const warmupCutoff = new Date(now.getTime() - WARMUP_DAYS * DAY_MS).toISOString();
   const cooldownCutoff = new Date(now.getTime() - COOLDOWN_DAYS * DAY_MS).toISOString();
 
-  const { data: group, error: groupErr } = await supabase
+  let groupQuery = supabase
     .from("external_groups")
     .select("*")
     .eq("is_active", true)
@@ -32,8 +49,13 @@ export async function POST(request: Request) {
     .or(`last_promoted_at.is.null,last_promoted_at.lt.${cooldownCutoff}`)
     .order("last_promoted_at", { ascending: true, nullsFirst: true })
     .order("joined_at", { ascending: true })
-    .limit(1)
-    .maybeSingle();
+    .limit(1);
+
+  if (scopedTag) {
+    groupQuery = groupQuery.eq("tag", scopedTag);
+  }
+
+  const { data: group, error: groupErr } = await groupQuery.maybeSingle();
 
   if (groupErr) {
     return NextResponse.json(
@@ -43,7 +65,12 @@ export async function POST(request: Request) {
   }
 
   if (!group) {
-    return NextResponse.json({ skipped: true, reason: "no eligible group" });
+    return NextResponse.json({
+      skipped: true,
+      reason: scopedTag
+        ? `no eligible group for tag ${scopedTag}`
+        : "no eligible group",
+    });
   }
 
   const { data: link, error: linkErr } = await supabase
@@ -66,27 +93,75 @@ export async function POST(request: Request) {
     });
   }
 
-  const { data: tmpl, error: tmplErr } = await supabase
-    .from("promo_templates")
-    .select("*")
-    .eq("tag", group.tag)
-    .order("use_count", { ascending: true })
-    .order("last_used_at", { ascending: true, nullsFirst: true })
-    .limit(1)
-    .maybeSingle();
+  let tmpl: { id: string; content: string; tag: string | null; use_count: number } | null =
+    null;
 
-  if (tmplErr) {
-    return NextResponse.json(
-      { error: "Failed to load template", details: tmplErr.message },
-      { status: 500 }
-    );
+  if (selectedTemplateId) {
+    const { data: selectedTemplate, error: selectedTemplateErr } = await supabase
+      .from("promo_templates")
+      .select("*")
+      .eq("id", selectedTemplateId)
+      .maybeSingle();
+
+    if (selectedTemplateErr) {
+      return NextResponse.json(
+        {
+          error: "Failed to load selected template",
+          details: selectedTemplateErr.message,
+        },
+        { status: 500 }
+      );
+    }
+
+    if (!selectedTemplate) {
+      return NextResponse.json(
+        { error: `Selected template not found: ${selectedTemplateId}` },
+        { status: 400 }
+      );
+    }
+
+    if (selectedTemplate.tag !== group.tag) {
+      return NextResponse.json(
+        {
+          error: `Selected template tag (${selectedTemplate.tag ?? "none"}) does not match group tag (${group.tag})`,
+        },
+        { status: 400 }
+      );
+    }
+
+    tmpl = selectedTemplate;
+  } else {
+    const { data: rotatedTemplate, error: rotatedTemplateErr } = await supabase
+      .from("promo_templates")
+      .select("*")
+      .eq("tag", group.tag)
+      .order("use_count", { ascending: true })
+      .order("last_used_at", { ascending: true, nullsFirst: true })
+      .limit(1)
+      .maybeSingle();
+
+    if (rotatedTemplateErr) {
+      return NextResponse.json(
+        { error: "Failed to load template", details: rotatedTemplateErr.message },
+        { status: 500 }
+      );
+    }
+
+    if (!rotatedTemplate) {
+      return NextResponse.json({
+        skipped: true,
+        reason: `no template for tag ${group.tag}`,
+      });
+    }
+
+    tmpl = rotatedTemplate;
   }
 
   if (!tmpl) {
-    return NextResponse.json({
-      skipped: true,
-      reason: `no template for tag ${group.tag}`,
-    });
+    return NextResponse.json(
+      { error: "Template selection failed unexpectedly" },
+      { status: 500 }
+    );
   }
 
   const body = tmpl.content.replaceAll("{{link}}", link.current_url);
