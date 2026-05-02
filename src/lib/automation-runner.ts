@@ -1,31 +1,55 @@
 import { supabase } from "@/lib/supabase";
 import { looksLikeKickOrForbidden, sendWhapiText } from "@/lib/whapi-send";
 
-export type AutomationConfigRow = {
+export type AutomationRow = {
   id: string;
   name: string;
   enabled: boolean;
-  cron_expr: string;
-  group_tags: string[] | null;
-  group_include_ids: string[] | null;
-  group_exclude_ids: string[] | null;
+  interval_minutes: number | null;
+  group_ids: string[] | null;
   template_ids: string[] | null;
   last_run_at: string | null;
   created_at: string;
   updated_at: string;
+  deleted_at: string | null;
 };
 
-export type AutomationRunSummary = {
-  skipped?: boolean;
+export type AutomationExecutionResult = {
+  automationId: string;
+  automationName: string;
+  status: "success" | "partial" | "failed" | "skipped";
   reason?: string;
   runId: string | null;
-  automationId: string | null;
   groupsTargeted: number;
   groupsSent: number;
   groupsFailed: number;
   templateId: string | null;
-  status: "success" | "partial" | "failed";
   messages: string[];
+};
+
+export type AutomationBatchSummary = {
+  startedAt: string;
+  finishedAt: string;
+  attempted: number;
+  executed: number;
+  skipped: number;
+  totalSent: number;
+  totalFailed: number;
+  results: AutomationExecutionResult[];
+};
+
+type GroupRow = {
+  id: string;
+  whapi_id: string;
+  name: string | null;
+  is_active: boolean;
+};
+
+type TemplateRow = {
+  id: string;
+  content: string;
+  use_count: number;
+  last_used_at: string | null;
 };
 
 function asStringArray(v: unknown): string[] {
@@ -33,58 +57,25 @@ function asStringArray(v: unknown): string[] {
   return v.filter((x): x is string => typeof x === "string");
 }
 
-function buildMessageBody(templateContent: string, promoLink?: string): {
-  ok: true;
-  body: string;
-} | { ok: false; error: string } {
-  const hasPlaceholder = templateContent.includes("{{link}}");
-  if (!hasPlaceholder)
-    return { ok: true, body: templateContent };
+function buildMessageBody(templateContent: string, promoLink?: string) {
+  if (!templateContent.includes("{{link}}")) {
+    return { ok: true as const, body: templateContent };
+  }
   const link = promoLink?.trim();
   if (!link) {
     return {
-      ok: false,
+      ok: false as const,
       error:
         'Template contains {{link}} but PROMO_LINK is not set in environment variables.',
     };
   }
   return {
-    ok: true,
+    ok: true as const,
     body: templateContent.split("{{link}}").join(link),
   };
 }
 
-export async function fetchOrCreateAutomationConfig(): Promise<
-  AutomationConfigRow
-> {
-  const first = await supabase
-    .from("automation_configs")
-    .select("*")
-    .limit(1)
-    .maybeSingle();
-
-  if (first.error) {
-    throw new Error(first.error.message);
-  }
-
-  if (first.data) return first.data as AutomationConfigRow;
-
-  const ins = await supabase
-    .from("automation_configs")
-    .insert({ name: "Default Automation", cron_expr: "*/5 * * * *" })
-    .select("*")
-    .single();
-
-  if (ins.error) {
-    throw new Error(ins.error.message);
-  }
-
-  return ins.data as AutomationConfigRow;
-}
-
-function pickRotatedTemplate<
-  T extends { id: string; use_count: number; last_used_at: string | null },
->(pool: T[]): T | null {
+function pickRotatedTemplate(pool: TemplateRow[]): TemplateRow | null {
   if (pool.length === 0) return null;
   return [...pool].sort((a, b) => {
     if (a.use_count !== b.use_count) return a.use_count - b.use_count;
@@ -94,367 +85,289 @@ function pickRotatedTemplate<
   })[0];
 }
 
-type TargetGroupRow = {
-  id: string;
-  whapi_id: string;
-  name: string | null;
-  is_active: boolean;
-  tags: unknown;
-  status_notes: string | null;
-};
-
-/**
- * Hybrid targeting: union of (groups matching any group_tags) and group_include_ids,
- * minus group_exclude_ids. Only active groups.
- */
-function resolveTargetGroups(
-  allGroups: TargetGroupRow[],
-  config: AutomationConfigRow
-): TargetGroupRow[] {
-  const tagFilter = asStringArray(config.group_tags);
-  const includeIds = new Set(asStringArray(config.group_include_ids));
-  const excludeIds = new Set(asStringArray(config.group_exclude_ids));
-
-  const byId = new Map(allGroups.map((g) => [g.id, g]));
-  const selected = new Map<string, TargetGroupRow>();
-
-  for (const g of allGroups) {
-    if (!g.is_active) continue;
-    const tags = asStringArray(g.tags);
-    if (tagFilter.length === 0) continue;
-    if (tags.some((t) => tagFilter.includes(t))) {
-      selected.set(g.id, g);
-    }
-  }
-
-  for (const id of includeIds) {
-    const g = byId.get(id);
-    if (g?.is_active) selected.set(id, g);
-  }
-
-  for (const id of excludeIds) {
-    selected.delete(id);
-  }
-
-  return [...selected.values()];
+function isDue(nowMs: number, row: AutomationRow): boolean {
+  const mins =
+    typeof row.interval_minutes === "number" && row.interval_minutes > 0
+      ? row.interval_minutes
+      : 15;
+  if (!row.last_run_at) return true;
+  const last = new Date(row.last_run_at).getTime();
+  if (!Number.isFinite(last)) return true;
+  return nowMs - last >= mins * 60_000;
 }
 
-export async function runAutomation(opts: {
-  allowWhenDisabled: boolean;
-}): Promise<AutomationRunSummary> {
+async function executeOneAutomation(
+  row: AutomationRow,
+  token: string,
+  nowIso: string
+): Promise<AutomationExecutionResult> {
   const messages: string[] = [];
-  const token = process.env.WHAPI_TOKEN;
-
   let runId: string | null = null;
-  let automationId: string | null = null;
-  let groupsTargeted = 0;
   let groupsSent = 0;
   let groupsFailed = 0;
   let templateId: string | null = null;
-  let finalStatus: "success" | "partial" | "failed" = "failed";
 
-  try {
-    const config = await fetchOrCreateAutomationConfig();
+  const groupIds = asStringArray(row.group_ids);
+  const templateIds = asStringArray(row.template_ids);
 
-    automationId = config.id;
+  const baseResult = {
+    automationId: row.id,
+    automationName: row.name,
+    runId: null as string | null,
+    groupsTargeted: 0,
+    groupsSent: 0,
+    groupsFailed: 0,
+    templateId: null as string | null,
+    messages,
+  };
 
-    if (!opts.allowWhenDisabled && !config.enabled) {
-      return {
-        skipped: true,
-        reason: "Automation is disabled",
-        runId: null,
-        automationId: config.id,
-        groupsTargeted: 0,
-        groupsSent: 0,
-        groupsFailed: 0,
-        templateId: null,
-        status: "success",
-        messages: ["Skipped: automation disabled"],
-      };
-    }
-
-    if (!token) {
-      messages.push("WHAPI_TOKEN is not configured");
-      return {
-        runId: null,
-        automationId: config.id,
-        groupsTargeted: 0,
-        groupsSent: 0,
-        groupsFailed: 0,
-        templateId: null,
-        status: "failed",
-        messages,
-      };
-    }
-
-    const { data: allGroups, error: gErr } = await supabase
-      .from("external_groups")
-      .select("id, whapi_id, name, is_active, tags, status_notes");
-
-    if (gErr) {
-      messages.push(`Failed to load groups: ${gErr.message}`);
-      return {
-        runId: null,
-        automationId: config.id,
-        groupsTargeted: 0,
-        groupsSent: 0,
-        groupsFailed: 0,
-        templateId: null,
-        status: "failed",
-        messages,
-      };
-    }
-
-    const targets = resolveTargetGroups(allGroups ?? [], config);
-    groupsTargeted = targets.length;
-
-    const templateIdList = asStringArray(config.template_ids);
-    if (templateIdList.length === 0) {
-      messages.push("No templates selected in automation pool");
-      const insRun = await supabase
-        .from("automation_runs")
-        .insert({
-          automation_id: config.id,
-          groups_targeted: groupsTargeted,
-          groups_sent: 0,
-          groups_failed: 0,
-          status: "failed",
-          finished_at: new Date().toISOString(),
-          error_summary: messages.join("; "),
-        })
-        .select("id")
-        .single();
-      runId = insRun.data?.id ?? null;
-      return {
-        runId,
-        automationId: config.id,
-        groupsTargeted,
-        groupsSent: 0,
-        groupsFailed: 0,
-        templateId: null,
-        status: "failed",
-        messages,
-      };
-    }
-
-    const { data: tmplRows, error: tErr } = await supabase
-      .from("promo_templates")
-      .select("*")
-      .in("id", templateIdList);
-
-    if (tErr) {
-      messages.push(`Failed to load templates: ${tErr.message}`);
-      return {
-        runId: null,
-        automationId: config.id,
-        groupsTargeted,
-        groupsSent: 0,
-        groupsFailed: 0,
-        templateId: null,
-        status: "failed",
-        messages,
-      };
-    }
-
-    const pool = (tmplRows ?? []).filter((t) => templateIdList.includes(t.id));
-    const chosen = pickRotatedTemplate(pool);
-    if (!chosen) {
-      messages.push("None of the selected template IDs exist in the database");
-      const insRun = await supabase
-        .from("automation_runs")
-        .insert({
-          automation_id: config.id,
-          groups_targeted: groupsTargeted,
-          groups_sent: 0,
-          groups_failed: 0,
-          status: "failed",
-          finished_at: new Date().toISOString(),
-          error_summary: messages.join("; "),
-        })
-        .select("id")
-        .single();
-      runId = insRun.data?.id ?? null;
-      return {
-        runId,
-        automationId: config.id,
-        groupsTargeted,
-        groupsSent: 0,
-        groupsFailed: 0,
-        templateId: null,
-        status: "failed",
-        messages,
-      };
-    }
-
-    templateId = chosen.id;
-
-    const bodyResult = buildMessageBody(
-      chosen.content,
-      process.env.PROMO_LINK
-    );
-    if (!bodyResult.ok) {
-      messages.push(bodyResult.error);
-      const insRun = await supabase
-        .from("automation_runs")
-        .insert({
-          automation_id: config.id,
-          groups_targeted: groupsTargeted,
-          groups_sent: 0,
-          groups_failed: 0,
-          status: "failed",
-          finished_at: new Date().toISOString(),
-          error_summary: bodyResult.error,
-        })
-        .select("id")
-        .single();
-      runId = insRun.data?.id ?? null;
-      return {
-        runId,
-        automationId: config.id,
-        groupsTargeted,
-        groupsSent: 0,
-        groupsFailed: 0,
-        templateId: chosen.id,
-        status: "failed",
-        messages,
-      };
-    }
-
-    const body = bodyResult.body;
-    const nowIso = new Date().toISOString();
-
-    const { data: runInsert, error: runInsErr } = await supabase
-      .from("automation_runs")
-      .insert({
-        automation_id: config.id,
-        groups_targeted: groupsTargeted,
-        groups_sent: 0,
-        groups_failed: 0,
-        status: "running",
-      })
-      .select("id")
-      .single();
-
-    if (runInsErr || !runInsert) {
-      messages.push(`Failed to create run log: ${runInsErr?.message}`);
-      return {
-        runId: null,
-        automationId: config.id,
-        groupsTargeted,
-        groupsSent: 0,
-        groupsFailed: 0,
-        templateId: chosen.id,
-        status: "failed",
-        messages,
-      };
-    }
-
-    runId = runInsert.id;
-
-    for (const g of targets) {
-      const whapiId = g.whapi_id as string;
-      const send = await sendWhapiText(token, whapiId, body);
-
-      if (!send.ok) {
-        groupsFailed += 1;
-        const snippet = send.bodyText.slice(0, 200);
-        messages.push(
-          `Send failed for ${g.name ?? whapiId}: HTTP ${send.status} ${snippet}`
-        );
-
-        if (looksLikeKickOrForbidden(send.status)) {
-          await supabase
-            .from("external_groups")
-            .update({
-              is_active: false,
-              status_notes: `Automation: Whapi ${send.status} at ${nowIso}`,
-            })
-            .eq("id", g.id);
-        }
-        continue;
-      }
-
-      groupsSent += 1;
-      await supabase
-        .from("external_groups")
-        .update({ last_promoted_at: nowIso })
-        .eq("id", g.id);
-    }
-
-    if (groupsTargeted === 0) {
-      finalStatus = "success";
-    } else if (groupsSent === groupsTargeted) {
-      finalStatus = "success";
-    } else if (groupsSent === 0) {
-      finalStatus = "failed";
-    } else {
-      finalStatus = "partial";
-    }
-
-    if (groupsSent > 0) {
-      const newUse = (chosen.use_count ?? 0) + 1;
-      await supabase
-        .from("promo_templates")
-        .update({
-          use_count: newUse,
-          last_used_at: nowIso,
-        })
-        .eq("id", chosen.id);
-    }
-
-    await supabase
-      .from("automation_configs")
-      .update({ last_run_at: nowIso, updated_at: nowIso })
-      .eq("id", config.id);
-
-    const errorSummary =
-      groupsFailed > 0 ? messages.slice(-10).join("; ") : null;
-
-    await supabase
-      .from("automation_runs")
-      .update({
-        finished_at: nowIso,
-        status: finalStatus,
-        groups_sent: groupsSent,
-        groups_failed: groupsFailed,
-        error_summary: errorSummary,
-      })
-      .eq("id", runId);
-
+  if (groupIds.length === 0) {
     return {
-      runId,
-      automationId: config.id,
-      groupsTargeted,
-      groupsSent,
-      groupsFailed,
-      templateId: chosen.id,
-      status: finalStatus,
-      messages,
-    };
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : "Unknown error";
-    messages.push(msg);
-    if (runId) {
-      await supabase
-        .from("automation_runs")
-        .update({
-          finished_at: new Date().toISOString(),
-          status: "failed",
-          groups_sent: groupsSent,
-          groups_failed: groupsFailed,
-          error_summary: msg,
-        })
-        .eq("id", runId);
-    }
-    return {
-      runId,
-      automationId,
-      groupsTargeted,
-      groupsSent,
-      groupsFailed,
-      templateId,
-      status: "failed",
-      messages,
+      ...baseResult,
+      status: "skipped",
+      reason: "No groups selected",
     };
   }
+
+  if (templateIds.length === 0) {
+    return {
+      ...baseResult,
+      status: "skipped",
+      reason: "No templates selected",
+    };
+  }
+
+  const { data: groups, error: groupErr } = await supabase
+    .from("external_groups")
+    .select("id, whapi_id, name, is_active")
+    .in("id", groupIds)
+    .eq("is_active", true);
+  if (groupErr) {
+    return {
+      ...baseResult,
+      status: "failed",
+      reason: `Failed to load groups: ${groupErr.message}`,
+    };
+  }
+
+  const targets = (groups ?? []) as GroupRow[];
+  const groupsTargeted = targets.length;
+  if (groupsTargeted === 0) {
+    return {
+      ...baseResult,
+      status: "skipped",
+      reason: "No active selected groups",
+    };
+  }
+
+  const { data: templates, error: templateErr } = await supabase
+    .from("promo_templates")
+    .select("id, content, use_count, last_used_at")
+    .in("id", templateIds);
+  if (templateErr) {
+    return {
+      ...baseResult,
+      groupsTargeted,
+      status: "failed",
+      reason: `Failed to load templates: ${templateErr.message}`,
+    };
+  }
+
+  const pool = (templates ?? []) as TemplateRow[];
+  const selected = pickRotatedTemplate(pool);
+  if (!selected) {
+    return {
+      ...baseResult,
+      groupsTargeted,
+      status: "failed",
+      reason: "No template from selected pool was found",
+    };
+  }
+  templateId = selected.id;
+
+  const built = buildMessageBody(selected.content, process.env.PROMO_LINK);
+  if (!built.ok) {
+    return {
+      ...baseResult,
+      groupsTargeted,
+      templateId,
+      status: "failed",
+      reason: built.error,
+    };
+  }
+
+  const runIns = await supabase
+    .from("automation_runs")
+    .insert({
+      automation_id: row.id,
+      automation_name: row.name,
+      status: "running",
+      groups_targeted: groupsTargeted,
+      groups_sent: 0,
+      groups_failed: 0,
+    })
+    .select("id")
+    .single();
+  if (runIns.error || !runIns.data) {
+    return {
+      ...baseResult,
+      groupsTargeted,
+      templateId,
+      status: "failed",
+      reason: `Failed to create run log: ${runIns.error?.message ?? "unknown"}`,
+    };
+  }
+  runId = runIns.data.id;
+
+  for (const g of targets) {
+    const send = await sendWhapiText(token, g.whapi_id, built.body);
+    if (!send.ok) {
+      groupsFailed += 1;
+      messages.push(
+        `Send failed for ${g.name ?? g.whapi_id}: HTTP ${send.status}`
+      );
+      if (looksLikeKickOrForbidden(send.status)) {
+        await supabase
+          .from("external_groups")
+          .update({
+            is_active: false,
+            status_notes: `Automation ${row.name}: Whapi ${send.status} at ${nowIso}`,
+          })
+          .eq("id", g.id);
+      }
+      continue;
+    }
+    groupsSent += 1;
+    await supabase
+      .from("external_groups")
+      .update({ last_promoted_at: nowIso })
+      .eq("id", g.id);
+  }
+
+  let status: "success" | "partial" | "failed" = "failed";
+  if (groupsSent === groupsTargeted) status = "success";
+  else if (groupsSent > 0) status = "partial";
+
+  if (groupsSent > 0) {
+    await supabase
+      .from("promo_templates")
+      .update({
+        use_count: selected.use_count + 1,
+        last_used_at: nowIso,
+      })
+      .eq("id", selected.id);
+  }
+
+  await supabase
+    .from("automation_configs")
+    .update({ last_run_at: nowIso, updated_at: nowIso })
+    .eq("id", row.id);
+
+  await supabase
+    .from("automation_runs")
+    .update({
+      finished_at: nowIso,
+      status,
+      groups_sent: groupsSent,
+      groups_failed: groupsFailed,
+      error_summary: groupsFailed > 0 ? messages.join("; ").slice(0, 5000) : null,
+    })
+    .eq("id", runId);
+
+  return {
+    automationId: row.id,
+    automationName: row.name,
+    status,
+    runId,
+    groupsTargeted,
+    groupsSent,
+    groupsFailed,
+    templateId,
+    messages,
+  };
+}
+
+export async function runScheduledAutomations(): Promise<AutomationBatchSummary> {
+  const startedAt = new Date().toISOString();
+  const nowMs = Date.now();
+  const token = process.env.WHAPI_TOKEN;
+
+  if (!token) {
+    return {
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      attempted: 0,
+      executed: 0,
+      skipped: 0,
+      totalSent: 0,
+      totalFailed: 0,
+      results: [
+        {
+          automationId: "none",
+          automationName: "none",
+          status: "failed",
+          reason: "WHAPI_TOKEN is not configured",
+          runId: null,
+          groupsTargeted: 0,
+          groupsSent: 0,
+          groupsFailed: 0,
+          templateId: null,
+          messages: [],
+        },
+      ],
+    };
+  }
+
+  const { data, error } = await supabase
+    .from("automation_configs")
+    .select("*")
+    .eq("enabled", true)
+    .is("deleted_at", null)
+    .order("created_at", { ascending: true });
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  const rows = (data ?? []) as AutomationRow[];
+  const results: AutomationExecutionResult[] = [];
+  let executed = 0;
+  let skipped = 0;
+  let totalSent = 0;
+  let totalFailed = 0;
+
+  for (const row of rows) {
+    if (!isDue(nowMs, row)) {
+      skipped += 1;
+      results.push({
+        automationId: row.id,
+        automationName: row.name,
+        status: "skipped",
+        reason: "Interval not elapsed yet",
+        runId: null,
+        groupsTargeted: 0,
+        groupsSent: 0,
+        groupsFailed: 0,
+        templateId: null,
+        messages: [],
+      });
+      continue;
+    }
+
+    executed += 1;
+    const res = await executeOneAutomation(row, token, new Date().toISOString());
+    totalSent += res.groupsSent;
+    totalFailed += res.groupsFailed;
+    results.push(res);
+  }
+
+  return {
+    startedAt,
+    finishedAt: new Date().toISOString(),
+    attempted: rows.length,
+    executed,
+    skipped,
+    totalSent,
+    totalFailed,
+    results,
+  };
 }

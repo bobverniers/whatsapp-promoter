@@ -1,0 +1,195 @@
+import { NextResponse } from "next/server";
+import { checkAuth } from "@/lib/auth";
+import { supabase } from "@/lib/supabase";
+import { normalizeUuidList } from "@/lib/uuids";
+
+function asPositiveInt(value: unknown, fallback: number): number {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return Math.floor(value);
+  }
+  if (typeof value === "string") {
+    const n = Number(value);
+    if (Number.isFinite(n) && n > 0) return Math.floor(n);
+  }
+  return fallback;
+}
+
+export async function GET(request: Request) {
+  const denied = checkAuth(request);
+  if (denied) return denied;
+
+  const [automationsRes, groupsRes, templatesRes, logsRes] = await Promise.all([
+    supabase
+      .from("automation_configs")
+      .select("*")
+      .is("deleted_at", null)
+      .order("created_at", { ascending: false }),
+    supabase
+      .from("external_groups")
+      .select("id, whapi_id, name, is_active, tags")
+      .order("name", { ascending: true, nullsFirst: false }),
+    supabase
+      .from("promo_templates")
+      .select("id, content, use_count, last_used_at, tags")
+      .order("use_count", { ascending: true }),
+    supabase
+      .from("automation_runs")
+      .select(
+        "id, automation_id, automation_name, started_at, finished_at, status, groups_targeted, groups_sent, groups_failed, error_summary"
+      )
+      .order("started_at", { ascending: false })
+      .limit(100),
+  ]);
+
+  const firstErr =
+    automationsRes.error ??
+    groupsRes.error ??
+    templatesRes.error ??
+    logsRes.error;
+  if (firstErr) {
+    return NextResponse.json(
+      { error: "Failed to load automations page", details: firstErr.message },
+      { status: 500 }
+    );
+  }
+
+  return NextResponse.json({
+    automations: automationsRes.data ?? [],
+    groups: groupsRes.data ?? [],
+    templates: templatesRes.data ?? [],
+    logs: logsRes.data ?? [],
+  });
+}
+
+export async function POST(request: Request) {
+  const denied = checkAuth(request);
+  if (denied) return denied;
+
+  let body: Record<string, unknown> = {};
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: "Expected JSON body" }, { status: 400 });
+  }
+
+  const name =
+    typeof body.name === "string" && body.name.trim()
+      ? body.name.trim()
+      : "New automation";
+  const interval_minutes = asPositiveInt(body.interval_minutes, 15);
+  const group_ids = normalizeUuidList(body.group_ids);
+  const template_ids = normalizeUuidList(body.template_ids);
+  const enabled = typeof body.enabled === "boolean" ? body.enabled : false;
+
+  const nowIso = new Date().toISOString();
+  const { data, error } = await supabase
+    .from("automation_configs")
+    .insert({
+      name,
+      enabled,
+      interval_minutes,
+      cron_expr: `${interval_minutes}m`,
+      group_ids,
+      template_ids,
+      updated_at: nowIso,
+    })
+    .select("*")
+    .single();
+
+  if (error) {
+    return NextResponse.json(
+      { error: "Failed to create automation", details: error.message },
+      { status: 500 }
+    );
+  }
+
+  return NextResponse.json(data);
+}
+
+export async function PATCH(request: Request) {
+  const denied = checkAuth(request);
+  if (denied) return denied;
+
+  let body: Record<string, unknown> = {};
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: "Expected JSON body" }, { status: 400 });
+  }
+
+  const id = typeof body.id === "string" ? body.id : "";
+  if (!id) {
+    return NextResponse.json({ error: "id is required" }, { status: 400 });
+  }
+
+  const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
+  if (typeof body.name === "string" && body.name.trim()) {
+    updates.name = body.name.trim();
+  }
+  if (typeof body.enabled === "boolean") {
+    updates.enabled = body.enabled;
+  }
+  if (body.interval_minutes !== undefined) {
+    const mins = asPositiveInt(body.interval_minutes, 15);
+    updates.interval_minutes = mins;
+    updates.cron_expr = `${mins}m`;
+  }
+  if (body.group_ids !== undefined) {
+    updates.group_ids = normalizeUuidList(body.group_ids);
+  }
+  if (body.template_ids !== undefined) {
+    updates.template_ids = normalizeUuidList(body.template_ids);
+  }
+
+  const { data, error } = await supabase
+    .from("automation_configs")
+    .update(updates)
+    .eq("id", id)
+    .is("deleted_at", null)
+    .select("*")
+    .single();
+
+  if (error) {
+    return NextResponse.json(
+      { error: "Failed to update automation", details: error.message },
+      { status: 500 }
+    );
+  }
+
+  return NextResponse.json(data);
+}
+
+export async function DELETE(request: Request) {
+  const denied = checkAuth(request);
+  if (denied) return denied;
+
+  let body: Record<string, unknown> = {};
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: "Expected JSON body" }, { status: 400 });
+  }
+
+  const id = typeof body.id === "string" ? body.id : "";
+  if (!id) {
+    return NextResponse.json({ error: "id is required" }, { status: 400 });
+  }
+
+  const nowIso = new Date().toISOString();
+  const { data, error } = await supabase
+    .from("automation_configs")
+    .update({ deleted_at: nowIso, enabled: false, updated_at: nowIso })
+    .eq("id", id)
+    .is("deleted_at", null)
+    .select("id")
+    .single();
+
+  if (error) {
+    return NextResponse.json(
+      { error: "Failed to delete automation", details: error.message },
+      { status: 500 }
+    );
+  }
+
+  return NextResponse.json({ ok: true, id: data.id });
+}

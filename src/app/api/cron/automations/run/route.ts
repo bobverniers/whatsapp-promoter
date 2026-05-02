@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { runAutomation } from "@/lib/automation-runner";
+import { runScheduledAutomations } from "@/lib/automation-runner";
 
 export const maxDuration = 300;
 
@@ -24,7 +24,7 @@ async function handleCron(request: Request) {
   }
 
   try {
-    const summary = await runAutomation({ allowWhenDisabled: false });
+    const summary = await runScheduledAutomations();
     return NextResponse.json(summary);
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Unknown error";
