@@ -108,7 +108,7 @@ export async function POST(request: Request) {
       id: group.id,
       name: group.name,
       whapi_id: group.whapi_id,
-      tag: group.tag,
+      tags: group.tags ?? [],
     },
     preview: body,
   });

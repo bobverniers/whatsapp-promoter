@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo } from "react";
+import Link from "next/link";
+import { TagsEditor } from "@/components/TagsEditor";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -8,7 +10,7 @@ interface Group {
   id: string;
   whapi_id: string;
   name: string | null;
-  tag: string | null;
+  tags: string[];
   joined_at: string;
   last_promoted_at: string | null;
   is_active: boolean;
@@ -18,9 +20,14 @@ interface Group {
 interface Template {
   id: string;
   content: string;
-  tag: string | null;
+  tags: string[];
   use_count: number;
   last_used_at: string | null;
+}
+
+function asTagList(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  return v.filter((x): x is string => typeof x === "string").map((x) => x.trim()).filter(Boolean);
 }
 
 // ─── API helper ──────────────────────────────────────────────────────────────
@@ -35,71 +42,6 @@ function api(path: string, opts: RequestInit = {}) {
       ...(opts.headers ?? {}),
     },
   });
-}
-
-// ─── Reusable tag input (select existing or type new) ────────────────────────
-
-function TagInput({
-  value,
-  knownTags,
-  onChange,
-  className,
-}: {
-  value: string;
-  knownTags: string[];
-  onChange: (v: string) => void;
-  className?: string;
-}) {
-  const [custom, setCustom] = useState(false);
-
-  if (custom) {
-    return (
-      <div className={`flex gap-1 ${className ?? ""}`}>
-        <input
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder="Type a tag..."
-          autoFocus
-          className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm text-zinc-200 outline-none focus:border-blue-500"
-        />
-        <button
-          type="button"
-          onClick={() => {
-            setCustom(false);
-            onChange("");
-          }}
-          className="shrink-0 text-xs text-zinc-500 hover:text-zinc-300"
-        >
-          Cancel
-        </button>
-      </div>
-    );
-  }
-
-  return (
-    <div className={`flex gap-1 ${className ?? ""}`}>
-      <select
-        value={value}
-        onChange={(e) => {
-          if (e.target.value === "__new__") {
-            setCustom(true);
-            onChange("");
-          } else {
-            onChange(e.target.value);
-          }
-        }}
-        className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm text-zinc-200 outline-none focus:border-blue-500"
-      >
-        <option value="">—</option>
-        {knownTags.map((t) => (
-          <option key={t} value={t}>
-            {t}
-          </option>
-        ))}
-        <option value="__new__">+ New tag...</option>
-      </select>
-    </div>
-  );
 }
 
 // ─── Password Gate ───────────────────────────────────────────────────────────
@@ -175,18 +117,28 @@ function GroupsTab() {
   const fetchGroups = useCallback(async () => {
     setLoading(true);
     const res = await api("/api/groups");
-    if (res.ok) setGroups(await res.json());
+    if (res.ok) {
+      const raw: Record<string, unknown>[] = await res.json();
+      setGroups(
+        raw.map((g) => {
+          const row = g as unknown as Group;
+          return { ...row, tags: asTagList(g.tags) };
+        })
+      );
+    }
     setLoading(false);
   }, []);
 
   useEffect(() => {
-    fetchGroups();
+    queueMicrotask(() => {
+      void fetchGroups();
+    });
   }, [fetchGroups]);
 
   const knownTags = useMemo(() => {
     const tags = new Set<string>();
     for (const g of groups) {
-      if (g.tag) tags.add(g.tag);
+      for (const t of g.tags) tags.add(t);
     }
     return Array.from(tags).sort();
   }, [groups]);
@@ -212,7 +164,13 @@ function GroupsTab() {
     });
     if (res.ok) {
       const updated = await res.json();
-      setGroups((prev) => prev.map((g) => (g.id === id ? updated : g)));
+      setGroups((prev) =>
+        prev.map((g) => {
+          if (g.id !== id) return g;
+          const u = updated as unknown as Group;
+          return { ...u, tags: asTagList((updated as Record<string, unknown>).tags) };
+        })
+      );
     }
   }
 
@@ -226,7 +184,8 @@ function GroupsTab() {
     }
 
     const label = g.name || g.whapi_id;
-    const tagLine = g.tag ? `Tag: ${g.tag}` : "Tag: none";
+    const tagLine =
+      g.tags.length > 0 ? `Tags: ${g.tags.join(", ")}` : "Tags: none";
     if (
       !confirm(
         `Send ONE test WhatsApp message to this group?\n\n${label}\n${tagLine}\n\nMessage preview:\n${testMessage}\n\nThis bypasses warmup/cooldown. Continue?`
@@ -256,7 +215,11 @@ function GroupsTab() {
         const name = data.group?.name ?? data.group?.whapi_id ?? "group";
         showBanner({
           kind: "success",
-          text: `[Test] Sent to ${name}${data.group?.tag ? ` (${data.group.tag})` : ""}`,
+          text: `[Test] Sent to ${name}${
+            data.group?.tags?.length
+              ? ` (${data.group.tags.join(", ")})`
+              : ""
+          }`,
         });
         await fetchGroups();
       } else if (data.skipped) {
@@ -275,16 +238,16 @@ function GroupsTab() {
   }
 
   const filtered = groups.filter((g) => {
-    if (filter === "untagged") return !g.tag;
-    if (filter !== "all") return g.tag === filter;
+    if (filter === "untagged") return g.tags.length === 0;
+    if (filter !== "all") return g.tags.includes(filter);
     return true;
   });
 
-  const untaggedCount = groups.filter((g) => !g.tag).length;
+  const untaggedCount = groups.filter((g) => g.tags.length === 0).length;
   const tagCounts = useMemo(() => {
     const map: Record<string, number> = {};
     for (const g of groups) {
-      if (g.tag) map[g.tag] = (map[g.tag] || 0) + 1;
+      for (const t of g.tags) map[t] = (map[t] || 0) + 1;
     }
     return map;
   }, [groups]);
@@ -373,7 +336,7 @@ function GroupsTab() {
             <thead className="border-b border-zinc-800 bg-zinc-900/50 text-zinc-400">
               <tr>
                 <th className="px-4 py-3 font-medium">Name</th>
-                <th className="px-4 py-3 font-medium">Tag</th>
+                <th className="px-4 py-3 font-medium">Tags</th>
                 <th className="px-4 py-3 font-medium">Joined</th>
                 <th className="px-4 py-3 font-medium">Last Promoted</th>
                 <th className="px-4 py-3 font-medium">Active</th>
@@ -388,12 +351,13 @@ function GroupsTab() {
                       <span className="text-zinc-600">{g.whapi_id}</span>
                     )}
                   </td>
-                  <td className="px-4 py-3">
-                    <TagInput
-                      value={g.tag ?? ""}
+                  <td className="max-w-[14rem] px-4 py-3">
+                    <TagsEditor
+                      value={g.tags}
                       knownTags={knownTags}
-                      onChange={(v) => updateGroup(g.id, { tag: v } as Partial<Group>)}
-                      className="w-36"
+                      onChange={(tags) =>
+                        updateGroup(g.id, { tags } as Partial<Group>)
+                      }
                     />
                   </td>
                   <td className="px-4 py-3 text-zinc-400">
@@ -447,31 +411,68 @@ function GroupsTab() {
 
 function TemplatesTab() {
   const [templates, setTemplates] = useState<Template[]>([]);
+  const [groupsForVocab, setGroupsForVocab] = useState<Group[]>([]);
   const [loading, setLoading] = useState(true);
   const [newContent, setNewContent] = useState("");
+  const [newTags, setNewTags] = useState<string[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editContent, setEditContent] = useState("");
+  const [editTags, setEditTags] = useState<string[]>([]);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
-    const tRes = await api("/api/templates");
-    if (tRes.ok) setTemplates(await tRes.json());
+    const [tRes, gRes] = await Promise.all([
+      api("/api/templates"),
+      api("/api/groups"),
+    ]);
+    if (tRes.ok) {
+      const raw: Record<string, unknown>[] = await tRes.json();
+      setTemplates(
+        raw.map((row) => {
+          const r = row as unknown as Template;
+          return { ...r, tags: asTagList(row.tags) };
+        })
+      );
+    }
+    if (gRes.ok) {
+      const raw: Record<string, unknown>[] = await gRes.json();
+      setGroupsForVocab(
+        raw.map((g) => {
+          const row = g as unknown as Group;
+          return { ...row, tags: asTagList(g.tags) };
+        })
+      );
+    }
     setLoading(false);
   }, []);
 
   useEffect(() => {
-    fetchData();
+    queueMicrotask(() => {
+      void fetchData();
+    });
   }, [fetchData]);
+
+  const knownTags = useMemo(() => {
+    const tags = new Set<string>();
+    for (const g of groupsForVocab) {
+      for (const t of g.tags) tags.add(t);
+    }
+    for (const tmpl of templates) {
+      for (const t of tmpl.tags) tags.add(t);
+    }
+    return [...tags].sort();
+  }, [groupsForVocab, templates]);
 
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault();
-    if (!newContent) return;
+    if (!newContent.trim()) return;
     const res = await api("/api/templates", {
       method: "POST",
-      body: JSON.stringify({ content: newContent }),
+      body: JSON.stringify({ content: newContent.trim(), tags: newTags }),
     });
     if (res.ok) {
       setNewContent("");
+      setNewTags([]);
       fetchData();
     }
   }
@@ -482,6 +483,7 @@ function TemplatesTab() {
       body: JSON.stringify({
         id,
         content: editContent,
+        tags: editTags,
       }),
     });
     if (res.ok) {
@@ -506,15 +508,21 @@ function TemplatesTab() {
         className="mb-6 rounded-xl border border-zinc-800 bg-zinc-900/50 p-4"
       >
         <textarea
-          placeholder='Write a message template for rotation, e.g. "Hey! We have a new housing channel this week..."'
+          placeholder='Message body (use {{link}} if you substitute an invite URL later)'
           value={newContent}
           onChange={(e) => setNewContent(e.target.value)}
           rows={3}
           className="mb-3 w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-200 placeholder-zinc-500 outline-none focus:border-blue-500"
         />
-        <p className="mb-3 text-xs text-zinc-500">
-          Keep a global pool of 10-15 messages. Tags are disabled in this MVP.
+        <p className="mb-2 text-xs text-zinc-500">
+          Use the same tags on both Groups and Templates (example: MVP). Later,
+          automation can match them by overlap: if a group has any tag that also
+          exists on a template, that template is eligible for that group. A
+          template can have multiple tags.
         </p>
+        <div className="mb-4 max-w-xl">
+          <TagsEditor value={newTags} knownTags={knownTags} onChange={setNewTags} />
+        </div>
         <button
           type="submit"
           className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-500"
@@ -544,14 +552,24 @@ function TemplatesTab() {
                     rows={3}
                     className="mb-3 w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-200 outline-none focus:border-blue-500"
                   />
+                  <p className="mb-1 text-xs text-zinc-500">Tags</p>
+                  <div className="mb-3 max-w-xl">
+                    <TagsEditor
+                      value={editTags}
+                      knownTags={knownTags}
+                      onChange={setEditTags}
+                    />
+                  </div>
                   <div className="flex gap-2">
                     <button
+                      type="button"
                       onClick={() => handleSave(t.id)}
                       className="rounded-lg bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-500"
                     >
                       Save
                     </button>
                     <button
+                      type="button"
                       onClick={() => setEditingId(null)}
                       className="rounded-lg bg-zinc-700 px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-600"
                     >
@@ -561,21 +579,38 @@ function TemplatesTab() {
                 </div>
               ) : (
                 <>
+                  <div className="mb-2 flex flex-wrap gap-1">
+                    {t.tags.length === 0 ? (
+                      <span className="text-xs text-zinc-500">No tags</span>
+                    ) : (
+                      t.tags.map((label) => (
+                        <span
+                          key={label}
+                          className="rounded-md bg-zinc-800 px-2 py-0.5 text-xs text-zinc-300"
+                        >
+                          {label}
+                        </span>
+                      ))
+                    )}
+                  </div>
                   <div className="mb-3 flex items-start justify-between gap-4">
                     <p className="whitespace-pre-wrap text-sm leading-relaxed text-zinc-200">
                       {t.content}
                     </p>
                     <div className="flex shrink-0 gap-2">
                       <button
+                        type="button"
                         onClick={() => {
                           setEditingId(t.id);
                           setEditContent(t.content);
+                          setEditTags([...t.tags]);
                         }}
                         className="rounded-lg bg-zinc-800 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:bg-zinc-700"
                       >
                         Edit
                       </button>
                       <button
+                        type="button"
                         onClick={() => handleDelete(t.id)}
                         className="rounded-lg bg-red-900/50 px-3 py-1.5 text-xs font-medium text-red-400 hover:bg-red-900/80"
                       >
@@ -609,9 +644,9 @@ export default function Home() {
   const [tab, setTab] = useState<"groups" | "templates">("groups");
 
   useEffect(() => {
-    if (sessionStorage.getItem("admin_pw")) {
-      setAuthed(true);
-    }
+    queueMicrotask(() => {
+      if (sessionStorage.getItem("admin_pw")) setAuthed(true);
+    });
   }, []);
 
   if (!authed) {
@@ -622,7 +657,15 @@ export default function Home() {
     <div className="min-h-screen bg-zinc-950 text-zinc-100">
       <header className="border-b border-zinc-800 bg-zinc-900/50">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
-          <h1 className="text-lg font-semibold">Promoter Admin</h1>
+          <div className="flex items-center gap-4">
+            <h1 className="text-lg font-semibold">Promoter Admin</h1>
+            <Link
+              href="/automations"
+              className="text-sm text-blue-400 hover:text-blue-300"
+            >
+              Automations
+            </Link>
+          </div>
           <button
             onClick={() => {
               sessionStorage.removeItem("admin_pw");
