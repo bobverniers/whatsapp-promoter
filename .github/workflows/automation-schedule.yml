@@ -20,7 +20,7 @@ name: Automation schedule
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "*/5 * * * *"
 
 concurrency:
   group: automation-cron-${{ github.ref }}
