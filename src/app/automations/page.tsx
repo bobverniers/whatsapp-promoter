@@ -445,7 +445,7 @@ export default function AutomationsPage() {
                   />
                   Enabled{" "}
                   <span className="text-xs text-zinc-500">
-                    (Vercel cron skips this task while off — Run now still works.)
+                    (Scheduled runs skip while off — Run now still works.)
                   </span>
                 </label>
 
@@ -500,18 +500,21 @@ export default function AutomationsPage() {
                   </div>
                 </div>
                 <p className="mb-4 text-[11px] leading-relaxed text-amber-200/70">
-                  <strong className="text-amber-200">Vercel:</strong> the real
-                  trigger uses{" "}
+                  <strong className="text-amber-200">Scheduler:</strong> automation
+                  runs on a{" "}
+                  <code className="text-zinc-400">cron</code> in{" "}
                   <code className="text-zinc-400">
-                    schedule in vercel.json
-                  </code>
-                  {" "}
-                  (currently every 5 minutes for testing). When you switch
-                  interval in this UI long-term, set the same cron in{" "}
-                  <code className="text-zinc-400">vercel.json</code> and redeploy.
-                  Stored value below is treated as truth for this task’s config
-                  and must match deployed schedule ({labelForCronExpr(localConfig.cron_expr)}{" "}
-                  · <span className="font-mono">{normalizeCronExpr(localConfig.cron_expr)}</span>).
+                    .github/workflows/automation-schedule.yml
+                  </code>{" "}
+                  (GitHub Actions, UTC). Daily app health still uses Vercel Cron
+                  for <code className="text-zinc-400">/api/heartbeat</code> only.
+                  When you change cadence, update that workflow and keep this
+                  expression in sync for clarity (
+                  {labelForCronExpr(localConfig.cron_expr)} ·{" "}
+                  <span className="font-mono">
+                    {normalizeCronExpr(localConfig.cron_expr)}
+                  </span>
+                  ).
                 </p>
 
                 <div className="mb-4 flex flex-wrap items-center gap-3 text-xs text-zinc-500">
