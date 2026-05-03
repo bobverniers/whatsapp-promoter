@@ -14,6 +14,63 @@ function asPositiveInt(value: unknown, fallback: number): number {
   return fallback;
 }
 
+function normalizeScheduleTz(value: unknown): string {
+  if (typeof value === "string") {
+    const t = value.trim();
+    if (t) return t;
+  }
+  return "UTC";
+}
+
+function coerceInt(
+  val: unknown,
+  min: number,
+  max: number
+): number | undefined {
+  if (val === undefined || val === null) return undefined;
+  const raw =
+    typeof val === "number" && Number.isFinite(val)
+      ? Math.floor(val)
+      : typeof val === "string" && val.trim()
+        ? Math.floor(Number(val))
+        : NaN;
+  if (!Number.isFinite(raw) || raw < min || raw > max) return undefined;
+  return raw;
+}
+
+function normalizeActiveHourWindow(
+  activeStart: unknown,
+  activeEndExclusive: unknown
+): { ok: false; error: string } | { ok: true; start: null; endExclusive: null } | { ok: true; start: number; endExclusive: number } {
+  const unsetStart = activeStart === undefined || activeStart === null;
+  const unsetEnd = activeEndExclusive === undefined || activeEndExclusive === null;
+
+  if (unsetStart && unsetEnd) {
+    return { ok: true, start: null, endExclusive: null };
+  }
+
+  const start = coerceInt(activeStart, 0, 23);
+  const endExclusive = coerceInt(activeEndExclusive, 1, 24);
+
+  if (start === undefined || endExclusive === undefined) {
+    return {
+      ok: false,
+      error:
+        "active_start_hour (0–23) and active_end_exclusive (1–24) must both be valid numbers when restricting hours.",
+    };
+  }
+
+  if (start >= endExclusive) {
+    return {
+      ok: false,
+      error:
+        "active_start_hour must be less than active_end_exclusive (exclusive end uses wall-clock hour).",
+    };
+  }
+
+  return { ok: true, start, endExclusive };
+}
+
 export async function GET(request: Request) {
   const denied = checkAuth(request);
   if (denied) return denied;
@@ -80,6 +137,14 @@ export async function POST(request: Request) {
   const group_ids = normalizeUuidList(body.group_ids);
   const template_ids = normalizeUuidList(body.template_ids);
   const enabled = typeof body.enabled === "boolean" ? body.enabled : false;
+  const schedule_tz = normalizeScheduleTz(body.schedule_tz);
+  const win = normalizeActiveHourWindow(
+    body.active_start_hour,
+    body.active_end_exclusive
+  );
+  if (!win.ok) {
+    return NextResponse.json({ error: win.error }, { status: 400 });
+  }
 
   const nowIso = new Date().toISOString();
   const { data, error } = await supabase
@@ -88,9 +153,11 @@ export async function POST(request: Request) {
       name,
       enabled,
       interval_minutes,
-      cron_expr: `${interval_minutes}m`,
       group_ids,
       template_ids,
+      schedule_tz,
+      active_start_hour: win.start,
+      active_end_exclusive: win.endExclusive,
       updated_at: nowIso,
     })
     .select("*")
@@ -129,10 +196,25 @@ export async function PATCH(request: Request) {
   if (typeof body.enabled === "boolean") {
     updates.enabled = body.enabled;
   }
+  if ("schedule_tz" in body) {
+    updates.schedule_tz = normalizeScheduleTz(body.schedule_tz);
+  }
+  if (
+    Object.prototype.hasOwnProperty.call(body, "active_start_hour") ||
+    Object.prototype.hasOwnProperty.call(body, "active_end_exclusive")
+  ) {
+    const win = normalizeActiveHourWindow(
+      body.active_start_hour,
+      body.active_end_exclusive
+    );
+    if (!win.ok) {
+      return NextResponse.json({ error: win.error }, { status: 400 });
+    }
+    updates.active_start_hour = win.start;
+    updates.active_end_exclusive = win.endExclusive;
+  }
   if (body.interval_minutes !== undefined) {
-    const mins = asPositiveInt(body.interval_minutes, 15);
-    updates.interval_minutes = mins;
-    updates.cron_expr = `${mins}m`;
+    updates.interval_minutes = asPositiveInt(body.interval_minutes, 15);
   }
   if (body.group_ids !== undefined) {
     updates.group_ids = normalizeUuidList(body.group_ids);

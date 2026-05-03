@@ -10,6 +10,9 @@ type Automation = {
   interval_minutes: number;
   group_ids: string[] | null;
   template_ids: string[] | null;
+  schedule_tz?: string | null;
+  active_start_hour?: number | null;
+  active_end_exclusive?: number | null;
   created_at: string;
   last_run_at: string | null;
   deleted_at: string | null;
@@ -51,9 +54,21 @@ type EditDraft = {
   group_ids: string[];
   template_ids: string[];
   enabled: boolean;
+  schedule_tz: string;
+  active_start_hour: number | null;
+  active_end_exclusive: number | null;
 };
 
 const INTERVAL_OPTIONS = [5, 15, 30, 60, 180];
+
+const COMMON_TIME_ZONES = [
+  "UTC",
+  "America/Los_Angeles",
+  "America/New_York",
+  "America/Chicago",
+  "Europe/London",
+  "Europe/Berlin",
+];
 
 function api(path: string, opts: RequestInit = {}) {
   const password =
@@ -77,6 +92,9 @@ function emptyDraft(): EditDraft {
     group_ids: [],
     template_ids: [],
     enabled: false,
+    schedule_tz: "UTC",
+    active_start_hour: null,
+    active_end_exclusive: null,
   };
 }
 
@@ -185,6 +203,103 @@ function AutomationModal({
                 </option>
               ))}
             </select>
+
+            <label className="mb-2 block text-xs text-zinc-500">
+              Local timezone (IANA)
+            </label>
+            <input
+              list="automations_tz_list"
+              value={draft.schedule_tz}
+              onChange={(e) =>
+                setDraft({ ...draft, schedule_tz: e.target.value.trim() })
+              }
+              placeholder="UTC"
+              className="mb-2 w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm outline-none focus:border-blue-500"
+            />
+            <datalist id="automations_tz_list">
+              {COMMON_TIME_ZONES.map((z) => (
+                <option key={z} value={z} />
+              ))}
+            </datalist>
+
+            <label className="mb-2 flex items-start gap-2 text-sm text-zinc-300">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={
+                  draft.active_start_hour != null ||
+                  draft.active_end_exclusive != null
+                }
+                onChange={(e) => {
+                  if (e.target.checked) {
+                    setDraft({
+                      ...draft,
+                      active_start_hour: 9,
+                      active_end_exclusive: 22,
+                    });
+                  } else {
+                    setDraft({
+                      ...draft,
+                      active_start_hour: null,
+                      active_end_exclusive: null,
+                    });
+                  }
+                }}
+              />
+              <span className="text-xs leading-snug text-zinc-400">
+                <span className="font-medium text-zinc-300">
+                  Restrict to local hours
+                </span>
+                <span className="block text-[11px] text-zinc-500">
+                  When enabled, sends only while the clock hour at the timezone
+                  is from start through hour before “end” (exclusive). Example:
+                  9→22 sends 09:00–21:59.
+                </span>
+              </span>
+            </label>
+            {(draft.active_start_hour != null ||
+              draft.active_end_exclusive != null) && (
+              <div className="mb-4 flex gap-4">
+                <div className="flex-1">
+                  <label className="mb-2 block text-xs text-zinc-500">
+                    Start hour (0–23)
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={23}
+                    value={draft.active_start_hour ?? 9}
+                    onChange={(e) =>
+                      setDraft({
+                        ...draft,
+                        active_start_hour:
+                          Number.parseInt(e.target.value, 10) ?? 9,
+                      })
+                    }
+                    className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm outline-none focus:border-blue-500"
+                  />
+                </div>
+                <div className="flex-1">
+                  <label className="mb-2 block text-xs text-zinc-500">
+                    End hour (exclusive 1–24)
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={24}
+                    value={draft.active_end_exclusive ?? 22}
+                    onChange={(e) =>
+                      setDraft({
+                        ...draft,
+                        active_end_exclusive:
+                          Number.parseInt(e.target.value, 10) ?? 22,
+                      })
+                    }
+                    className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm outline-none focus:border-blue-500"
+                  />
+                </div>
+              </div>
+            )}
 
             <label className="mb-4 flex items-center gap-2 text-sm text-zinc-300">
               <input
@@ -357,6 +472,11 @@ export default function AutomationsPage() {
       group_ids: a.group_ids ?? [],
       template_ids: a.template_ids ?? [],
       enabled: a.enabled,
+      schedule_tz: a.schedule_tz?.trim()
+        ? a.schedule_tz.trim()
+        : "UTC",
+      active_start_hour: a.active_start_hour ?? null,
+      active_end_exclusive: a.active_end_exclusive ?? null,
     });
     setDetailsOpen(true);
   }

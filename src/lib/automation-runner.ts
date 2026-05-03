@@ -8,6 +8,9 @@ export type AutomationRow = {
   interval_minutes: number | null;
   group_ids: string[] | null;
   template_ids: string[] | null;
+  schedule_tz?: string | null;
+  active_start_hour?: number | null;
+  active_end_exclusive?: number | null;
   last_run_at: string | null;
   created_at: string;
   updated_at: string;
@@ -94,6 +97,37 @@ function isDue(nowMs: number, row: AutomationRow): boolean {
   const last = new Date(row.last_run_at).getTime();
   if (!Number.isFinite(last)) return true;
   return nowMs - last >= mins * 60_000;
+}
+
+function localWallHour(now: Date, timeZone: string): number | null {
+  try {
+    const formatter = new Intl.DateTimeFormat("en-GB", {
+      timeZone,
+      hour: "numeric",
+      hourCycle: "h23",
+    });
+    const h = Number.parseInt(formatter.format(now), 10);
+    return Number.isFinite(h) ? h : null;
+  } catch {
+    return null;
+  }
+}
+
+function outsideActiveHourWindow(nowMs: number, row: AutomationRow): boolean {
+  const start = row.active_start_hour ?? null;
+  const endExclusive = row.active_end_exclusive ?? null;
+
+  if (start == null || endExclusive == null) return false;
+
+  const tz =
+    typeof row.schedule_tz === "string" && row.schedule_tz.trim().length > 0
+      ? row.schedule_tz.trim()
+      : "UTC";
+
+  const hour = localWallHour(new Date(nowMs), tz);
+  if (hour === null) return false;
+
+  return hour < start || hour >= endExclusive;
 }
 
 async function executeOneAutomation(
@@ -343,6 +377,23 @@ export async function runScheduledAutomations(): Promise<AutomationBatchSummary>
         automationName: row.name,
         status: "skipped",
         reason: "Interval not elapsed yet",
+        runId: null,
+        groupsTargeted: 0,
+        groupsSent: 0,
+        groupsFailed: 0,
+        templateId: null,
+        messages: [],
+      });
+      continue;
+    }
+
+    if (outsideActiveHourWindow(nowMs, row)) {
+      skipped += 1;
+      results.push({
+        automationId: row.id,
+        automationName: row.name,
+        status: "skipped",
+        reason: "Outside active hours",
         runId: null,
         groupsTargeted: 0,
         groupsSent: 0,
