@@ -117,6 +117,9 @@ function AutomationModal({
   saveLabel,
   allowDelete,
   onDelete,
+  showPauseResume,
+  pauseResumeLabel,
+  onPauseResume,
 }: {
   title: string;
   draft: EditDraft;
@@ -128,6 +131,9 @@ function AutomationModal({
   saveLabel: string;
   allowDelete?: boolean;
   onDelete?: () => void;
+  showPauseResume?: boolean;
+  pauseResumeLabel?: string;
+  onPauseResume?: () => void;
 }) {
   const [groupSearch, setGroupSearch] = useState("");
   const [templateSearch, setTemplateSearch] = useState("");
@@ -329,6 +335,15 @@ function AutomationModal({
               >
                 {saveLabel}
               </button>
+              {showPauseResume && onPauseResume && pauseResumeLabel && (
+                <button
+                  type="button"
+                  onClick={onPauseResume}
+                  className="rounded-lg bg-zinc-800 px-4 py-2 text-sm font-medium text-zinc-200 hover:bg-zinc-700"
+                >
+                  {pauseResumeLabel}
+                </button>
+              )}
               {allowDelete && onDelete && (
                 <button
                   type="button"
@@ -746,23 +761,12 @@ export default function AutomationsPage() {
           saveLabel="Save changes"
           allowDelete
           onDelete={deleteAutomation}
+          showPauseResume
+          pauseResumeLabel={
+            activeAutomation.enabled ? "Pause automation" : "Resume automation"
+          }
+          onPauseResume={() => void togglePauseResume(activeAutomation)}
         />
-      )}
-
-      {detailsOpen && activeAutomation && (
-        <div className="pointer-events-none fixed bottom-4 right-4 z-50">
-          <button
-            type="button"
-            onClick={() => togglePauseResume(activeAutomation)}
-            className={`pointer-events-auto rounded-lg px-3 py-2 text-xs font-medium ${
-              activeAutomation.enabled
-                ? "bg-zinc-800 text-zinc-200 hover:bg-zinc-700"
-                : "bg-emerald-700 text-emerald-100 hover:bg-emerald-600"
-            }`}
-          >
-            {activeAutomation.enabled ? "Pause automation" : "Resume automation"}
-          </button>
-        </div>
       )}
     </div>
   );
