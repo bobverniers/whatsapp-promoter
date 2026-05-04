@@ -154,6 +154,7 @@ export async function POST(request: Request) {
       enabled,
       interval_minutes,
       group_ids,
+      group_rotation_cursor: 0,
       template_ids,
       schedule_tz,
       active_start_hour: win.start,
@@ -218,6 +219,7 @@ export async function PATCH(request: Request) {
   }
   if (body.group_ids !== undefined) {
     updates.group_ids = normalizeUuidList(body.group_ids);
+    updates.group_rotation_cursor = 0;
   }
   if (body.template_ids !== undefined) {
     updates.template_ids = normalizeUuidList(body.template_ids);

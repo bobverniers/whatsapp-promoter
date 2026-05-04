@@ -7,6 +7,7 @@ export type AutomationRow = {
   enabled: boolean;
   interval_minutes: number | null;
   group_ids: string[] | null;
+  group_rotation_cursor?: number | null;
   template_ids: string[] | null;
   schedule_tz?: string | null;
   active_start_hour?: number | null;
@@ -211,15 +212,33 @@ async function executeOneAutomation(
     };
   }
 
-  const targets = (groups ?? []) as GroupRow[];
-  const groupsTargeted = targets.length;
-  if (groupsTargeted === 0) {
+  const activeMap = new Map<string, GroupRow>();
+  for (const g of (groups ?? []) as GroupRow[]) {
+    activeMap.set(g.id, g);
+  }
+  const orderedTargets = groupIds
+    .map((id) => activeMap.get(id))
+    .filter((g): g is GroupRow => Boolean(g));
+  const activeTargetsCount = orderedTargets.length;
+  if (activeTargetsCount === 0) {
     return {
       ...baseResult,
       status: "skipped",
       reason: "No active selected groups",
     };
   }
+
+  const currentCursor =
+    typeof row.group_rotation_cursor === "number" &&
+    Number.isFinite(row.group_rotation_cursor) &&
+    row.group_rotation_cursor >= 0
+      ? Math.floor(row.group_rotation_cursor)
+      : 0;
+  const chosenIdx = currentCursor % orderedTargets.length;
+  const chosenTarget = orderedTargets[chosenIdx];
+  const chosenGroupChat = chosenTarget.name ?? chosenTarget.whapi_id;
+  const nextCursor = currentCursor + 1;
+  const groupsTargeted = 1;
 
   const { data: templates, error: templateErr } = await supabase
     .from("promo_templates")
@@ -263,9 +282,10 @@ async function executeOneAutomation(
       automation_id: row.id,
       automation_name: row.name,
       status: "running",
-      groups_targeted: groupsTargeted,
+      groups_targeted: 1,
       groups_sent: 0,
       groups_failed: 0,
+      group_chat: chosenGroupChat,
       message_sent: built.body,
     })
     .select("id")
@@ -281,34 +301,32 @@ async function executeOneAutomation(
   }
   runId = runIns.data.id;
 
-  for (const g of targets) {
-    const send = await sendWhapiText(token, g.whapi_id, built.body);
-    if (!send.ok) {
-      groupsFailed += 1;
-      messages.push(
-        `Send failed for ${g.name ?? g.whapi_id}: HTTP ${send.status}`
-      );
-      if (looksLikeKickOrForbidden(send.status)) {
-        await supabase
-          .from("external_groups")
-          .update({
-            is_active: false,
-            status_notes: `Automation ${row.name}: Whapi ${send.status} at ${nowIso}`,
-          })
-          .eq("id", g.id);
-      }
-      continue;
+  const send = await sendWhapiText(token, chosenTarget.whapi_id, built.body);
+  if (!send.ok) {
+    groupsFailed = 1;
+    messages.push(
+      `Send failed for ${chosenTarget.name ?? chosenTarget.whapi_id}: HTTP ${send.status}`
+    );
+    if (looksLikeKickOrForbidden(send.status)) {
+      await supabase
+        .from("external_groups")
+        .update({
+          is_active: false,
+          status_notes: `Automation ${row.name}: Whapi ${send.status} at ${nowIso}`,
+        })
+        .eq("id", chosenTarget.id);
     }
-    groupsSent += 1;
-    if (!sentGroupChat) sentGroupChat = g.name ?? g.whapi_id;
+  } else {
+    groupsSent = 1;
+    sentGroupChat = chosenGroupChat;
     await supabase
       .from("external_groups")
       .update({ last_promoted_at: nowIso })
-      .eq("id", g.id);
+      .eq("id", chosenTarget.id);
   }
 
   let status: "success" | "partial" | "failed" = "failed";
-  if (groupsSent === groupsTargeted) status = "success";
+  if (groupsSent === 1) status = "success";
   else if (groupsSent > 0) status = "partial";
 
   if (groupsSent > 0) {
@@ -323,7 +341,11 @@ async function executeOneAutomation(
 
   await supabase
     .from("automation_configs")
-    .update({ last_run_at: nowIso, updated_at: nowIso })
+    .update({
+      last_run_at: nowIso,
+      updated_at: nowIso,
+      group_rotation_cursor: nextCursor,
+    })
     .eq("id", row.id);
 
   await supabase
@@ -333,7 +355,7 @@ async function executeOneAutomation(
       status,
       groups_sent: groupsSent,
       groups_failed: groupsFailed,
-      group_chat: sentGroupChat,
+      group_chat: sentGroupChat ?? chosenGroupChat,
       error_summary: groupsFailed > 0 ? messages.join("; ").slice(0, 5000) : null,
     })
     .eq("id", runId);

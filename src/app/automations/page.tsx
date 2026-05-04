@@ -693,10 +693,20 @@ export default function AutomationsPage() {
                       {r.groups_failed}
                     </td>
                     <td className="py-2 pr-3 text-zinc-300">
-                      <span className="line-clamp-1">{r.group_chat ?? "—"}</span>
+                      <span
+                        className="line-clamp-1 cursor-help"
+                        title={r.group_chat ?? ""}
+                      >
+                        {r.group_chat ?? "—"}
+                      </span>
                     </td>
                     <td className="py-2 pr-3 text-zinc-300">
-                      <span className="line-clamp-2 whitespace-pre-wrap">{r.message_sent ?? "—"}</span>
+                      <span
+                        className="line-clamp-2 cursor-help whitespace-pre-wrap"
+                        title={r.message_sent ?? ""}
+                      >
+                        {r.message_sent ?? "—"}
+                      </span>
                     </td>
                   </tr>
                 ))}
