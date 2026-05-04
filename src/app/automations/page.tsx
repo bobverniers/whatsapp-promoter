@@ -45,6 +45,8 @@ type RunLog = {
   groups_sent: number;
   groups_failed: number;
   error_summary: string | null;
+  group_chat: string | null;
+  message_sent: string | null;
 };
 
 type EditDraft = {
@@ -671,6 +673,8 @@ export default function AutomationsPage() {
                   <th className="pb-2 pr-3 font-medium">Targeted</th>
                   <th className="pb-2 pr-3 font-medium">Sent</th>
                   <th className="pb-2 pr-3 font-medium">Failed</th>
+                  <th className="pb-2 pr-3 font-medium">Group chat</th>
+                  <th className="pb-2 pr-3 font-medium">Message sent</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-800">
@@ -688,11 +692,17 @@ export default function AutomationsPage() {
                     <td className="py-2 pr-3 text-red-400/90">
                       {r.groups_failed}
                     </td>
+                    <td className="py-2 pr-3 text-zinc-300">
+                      <span className="line-clamp-1">{r.group_chat ?? "—"}</span>
+                    </td>
+                    <td className="py-2 pr-3 text-zinc-300">
+                      <span className="line-clamp-2 whitespace-pre-wrap">{r.message_sent ?? "—"}</span>
+                    </td>
                   </tr>
                 ))}
                 {logs.length === 0 && (
                   <tr>
-                    <td colSpan={6} className="py-8 text-center text-zinc-500">
+                    <td colSpan={8} className="py-8 text-center text-zinc-500">
                       No logs yet.
                     </td>
                   </tr>
