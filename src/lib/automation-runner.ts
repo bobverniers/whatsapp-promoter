@@ -130,6 +130,32 @@ function outsideActiveHourWindow(nowMs: number, row: AutomationRow): boolean {
   return hour < start || hour >= endExclusive;
 }
 
+/**
+ * Atomic claim to prevent duplicate execution across overlapping cron invocations.
+ * We only claim if last_run_at still matches what we loaded.
+ */
+async function claimAutomationExecution(
+  row: AutomationRow,
+  claimIso: string
+): Promise<boolean> {
+  let query = supabase
+    .from("automation_configs")
+    .update({ last_run_at: claimIso, updated_at: claimIso })
+    .eq("id", row.id)
+    .eq("enabled", true)
+    .is("deleted_at", null);
+
+  if (row.last_run_at === null) {
+    query = query.is("last_run_at", null);
+  } else {
+    query = query.eq("last_run_at", row.last_run_at);
+  }
+
+  const { data, error } = await query.select("id").maybeSingle();
+  if (error) return false;
+  return Boolean(data?.id);
+}
+
 async function executeOneAutomation(
   row: AutomationRow,
   token: string,
@@ -394,6 +420,25 @@ export async function runScheduledAutomations(): Promise<AutomationBatchSummary>
         automationName: row.name,
         status: "skipped",
         reason: "Outside active hours",
+        runId: null,
+        groupsTargeted: 0,
+        groupsSent: 0,
+        groupsFailed: 0,
+        templateId: null,
+        messages: [],
+      });
+      continue;
+    }
+
+    const claimIso = new Date().toISOString();
+    const claimed = await claimAutomationExecution(row, claimIso);
+    if (!claimed) {
+      skipped += 1;
+      results.push({
+        automationId: row.id,
+        automationName: row.name,
+        status: "skipped",
+        reason: "Claimed by another runner",
         runId: null,
         groupsTargeted: 0,
         groupsSent: 0,
