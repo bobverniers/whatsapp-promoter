@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { checkAuth } from "@/lib/auth";
-
-const WHAPI_BASE = "https://gate.whapi.cloud";
+import { sendWhapiText } from "@/lib/whapi-send";
 
 export async function POST(request: Request) {
   const denied = checkAuth(request);
@@ -65,21 +64,15 @@ export async function POST(request: Request) {
   }
 
   const now = new Date();
-  const body = message;
+  const send = await sendWhapiText(token, group.whapi_id, message);
 
-  const res = await fetch(`${WHAPI_BASE}/messages/text`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ to: group.whapi_id, body }),
-  });
-
-  if (!res.ok) {
-    const details = await res.text();
+  if (!send.ok) {
     return NextResponse.json(
-      { error: "Whapi send failed", status: res.status, details },
+      {
+        error: "Whapi send failed",
+        status: send.status,
+        details: send.bodyText,
+      },
       { status: 502 }
     );
   }
@@ -110,6 +103,6 @@ export async function POST(request: Request) {
       whapi_id: group.whapi_id,
       tags: group.tags ?? [],
     },
-    preview: body,
+    preview: message,
   });
 }
