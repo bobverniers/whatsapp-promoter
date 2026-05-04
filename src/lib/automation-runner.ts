@@ -9,6 +9,7 @@ export type AutomationRow = {
   group_ids: string[] | null;
   group_rotation_cursor?: number | null;
   template_ids: string[] | null;
+  template_rotation_cursor?: number | null;
   schedule_tz?: string | null;
   active_start_hour?: number | null;
   active_end_exclusive?: number | null;
@@ -77,16 +78,6 @@ function buildMessageBody(templateContent: string, promoLink?: string) {
     ok: true as const,
     body: templateContent.split("{{link}}").join(link),
   };
-}
-
-function pickRotatedTemplate(pool: TemplateRow[]): TemplateRow | null {
-  if (pool.length === 0) return null;
-  return [...pool].sort((a, b) => {
-    if (a.use_count !== b.use_count) return a.use_count - b.use_count;
-    const ta = a.last_used_at ? new Date(a.last_used_at).getTime() : 0;
-    const tb = b.last_used_at ? new Date(b.last_used_at).getTime() : 0;
-    return ta - tb;
-  })[0];
 }
 
 function isDue(nowMs: number, row: AutomationRow): boolean {
@@ -254,7 +245,29 @@ async function executeOneAutomation(
   }
 
   const pool = (templates ?? []) as TemplateRow[];
-  const selected = pickRotatedTemplate(pool);
+  const templateMap = new Map<string, TemplateRow>();
+  for (const t of pool) templateMap.set(t.id, t);
+  const orderedTemplates = templateIds
+    .map((id) => templateMap.get(id))
+    .filter((t): t is TemplateRow => Boolean(t));
+  const activeTemplatesCount = orderedTemplates.length;
+  if (activeTemplatesCount === 0) {
+    return {
+      ...baseResult,
+      groupsTargeted,
+      status: "failed",
+      reason: "No template from selected pool was found",
+    };
+  }
+  const currentTemplateCursor =
+    typeof row.template_rotation_cursor === "number" &&
+    Number.isFinite(row.template_rotation_cursor) &&
+    row.template_rotation_cursor >= 0
+      ? Math.floor(row.template_rotation_cursor)
+      : 0;
+  const chosenTemplateIdx = currentTemplateCursor % activeTemplatesCount;
+  const selected = orderedTemplates[chosenTemplateIdx];
+  const nextTemplateCursor = currentTemplateCursor + 1;
   if (!selected) {
     return {
       ...baseResult,
@@ -345,6 +358,7 @@ async function executeOneAutomation(
       last_run_at: nowIso,
       updated_at: nowIso,
       group_rotation_cursor: nextCursor,
+      template_rotation_cursor: nextTemplateCursor,
     })
     .eq("id", row.id);
 

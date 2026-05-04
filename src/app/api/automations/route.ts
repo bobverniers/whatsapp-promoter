@@ -156,6 +156,7 @@ export async function POST(request: Request) {
       group_ids,
       group_rotation_cursor: 0,
       template_ids,
+      template_rotation_cursor: 0,
       schedule_tz,
       active_start_hour: win.start,
       active_end_exclusive: win.endExclusive,
@@ -223,6 +224,7 @@ export async function PATCH(request: Request) {
   }
   if (body.template_ids !== undefined) {
     updates.template_ids = normalizeUuidList(body.template_ids);
+    updates.template_rotation_cursor = 0;
   }
 
   const { data, error } = await supabase
