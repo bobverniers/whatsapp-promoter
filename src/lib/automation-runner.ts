@@ -166,6 +166,7 @@ async function executeOneAutomation(
   let groupsSent = 0;
   let groupsFailed = 0;
   let templateId: string | null = null;
+  let sentGroupChat: string | null = null;
 
   const groupIds = asStringArray(row.group_ids);
   const templateIds = asStringArray(row.template_ids);
@@ -265,6 +266,7 @@ async function executeOneAutomation(
       groups_targeted: groupsTargeted,
       groups_sent: 0,
       groups_failed: 0,
+      message_sent: built.body,
     })
     .select("id")
     .single();
@@ -298,6 +300,7 @@ async function executeOneAutomation(
       continue;
     }
     groupsSent += 1;
+    if (!sentGroupChat) sentGroupChat = g.name ?? g.whapi_id;
     await supabase
       .from("external_groups")
       .update({ last_promoted_at: nowIso })
@@ -330,6 +333,7 @@ async function executeOneAutomation(
       status,
       groups_sent: groupsSent,
       groups_failed: groupsFailed,
+      group_chat: sentGroupChat,
       error_summary: groupsFailed > 0 ? messages.join("; ").slice(0, 5000) : null,
     })
     .eq("id", runId);

@@ -92,7 +92,7 @@ export async function GET(request: Request) {
     supabase
       .from("automation_runs")
       .select(
-        "id, automation_id, automation_name, started_at, finished_at, status, groups_targeted, groups_sent, groups_failed, error_summary"
+        "id, automation_id, automation_name, started_at, finished_at, status, groups_targeted, groups_sent, groups_failed, group_chat, message_sent, error_summary"
       )
       .order("started_at", { ascending: false })
       .limit(100),

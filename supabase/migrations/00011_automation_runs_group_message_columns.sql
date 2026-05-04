@@ -1,0 +1,3 @@
+ALTER TABLE automation_runs
+ADD COLUMN IF NOT EXISTS group_chat TEXT,
+ADD COLUMN IF NOT EXISTS message_sent TEXT;
