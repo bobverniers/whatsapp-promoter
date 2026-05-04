@@ -694,16 +694,14 @@ export default function AutomationsPage() {
                     </td>
                     <td className="py-2 pr-3 text-zinc-300">
                       <span
-                        className="line-clamp-1 cursor-help"
-                        title={r.group_chat ?? ""}
+                        className="line-clamp-1 cursor-help rounded px-1 transition hover:line-clamp-none hover:bg-zinc-900/70"
                       >
                         {r.group_chat ?? "—"}
                       </span>
                     </td>
                     <td className="py-2 pr-3 text-zinc-300">
                       <span
-                        className="line-clamp-2 cursor-help whitespace-pre-wrap"
-                        title={r.message_sent ?? ""}
+                        className="line-clamp-2 cursor-help whitespace-pre-wrap rounded px-1 transition hover:line-clamp-none hover:bg-zinc-900/70"
                       >
                         {r.message_sent ?? "—"}
                       </span>
