@@ -7,8 +7,10 @@ export type AutomationRow = {
   enabled: boolean;
   interval_minutes: number | null;
   group_ids: string[] | null;
+  group_tags?: string[] | null;
   group_rotation_cursor?: number | null;
   template_ids: string[] | null;
+  template_tags?: string[] | null;
   template_rotation_cursor?: number | null;
   schedule_tz?: string | null;
   active_start_hour?: number | null;
@@ -60,6 +62,22 @@ type TemplateRow = {
 function asStringArray(v: unknown): string[] {
   if (!Array.isArray(v)) return [];
   return v.filter((x): x is string => typeof x === "string");
+}
+
+function mergeOrderedIds(primaryIds: string[], secondaryIds: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const id of primaryIds) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  for (const id of secondaryIds) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
 }
 
 function buildMessageBody(templateContent: string, promoLink?: string) {
@@ -161,7 +179,9 @@ async function executeOneAutomation(
   let sentGroupChat: string | null = null;
 
   const groupIds = asStringArray(row.group_ids);
+  const groupTags = asStringArray(row.group_tags);
   const templateIds = asStringArray(row.template_ids);
+  const templateTags = asStringArray(row.template_tags);
 
   const baseResult = {
     automationId: row.id,
@@ -174,27 +194,39 @@ async function executeOneAutomation(
     messages,
   };
 
-  if (groupIds.length === 0) {
+  if (groupIds.length === 0 && groupTags.length === 0) {
     return {
       ...baseResult,
       status: "skipped",
-      reason: "No groups selected",
+      reason: "No groups or group tags selected",
     };
   }
 
-  if (templateIds.length === 0) {
+  if (templateIds.length === 0 && templateTags.length === 0) {
     return {
       ...baseResult,
       status: "skipped",
-      reason: "No templates selected",
+      reason: "No templates or template tags selected",
     };
   }
 
-  const { data: groups, error: groupErr } = await supabase
-    .from("external_groups")
-    .select("id, whapi_id, name, is_active")
-    .in("id", groupIds)
-    .eq("is_active", true);
+  const [manualGroupsRes, tagGroupsRes] = await Promise.all([
+    groupIds.length > 0
+      ? supabase
+          .from("external_groups")
+          .select("id, whapi_id, name, is_active")
+          .in("id", groupIds)
+          .eq("is_active", true)
+      : Promise.resolve({ data: [], error: null }),
+    groupTags.length > 0
+      ? supabase
+          .from("external_groups")
+          .select("id, whapi_id, name, is_active")
+          .overlaps("tags", groupTags)
+          .eq("is_active", true)
+      : Promise.resolve({ data: [], error: null }),
+  ]);
+  const groupErr = manualGroupsRes.error ?? tagGroupsRes.error;
   if (groupErr) {
     return {
       ...baseResult,
@@ -203,12 +235,27 @@ async function executeOneAutomation(
     };
   }
 
-  const activeMap = new Map<string, GroupRow>();
-  for (const g of (groups ?? []) as GroupRow[]) {
-    activeMap.set(g.id, g);
+  const manualGroups = (manualGroupsRes.data ?? []) as GroupRow[];
+  const tagGroups = [...((tagGroupsRes.data ?? []) as GroupRow[])].sort((a, b) => {
+    const an = (a.name ?? a.whapi_id).toLowerCase();
+    const bn = (b.name ?? b.whapi_id).toLowerCase();
+    if (an !== bn) return an.localeCompare(bn);
+    return a.id.localeCompare(b.id);
+  });
+  const manualMap = new Map<string, GroupRow>();
+  for (const g of manualGroups) {
+    manualMap.set(g.id, g);
   }
-  const orderedTargets = groupIds
-    .map((id) => activeMap.get(id))
+  const tagMap = new Map<string, GroupRow>();
+  for (const g of tagGroups) {
+    tagMap.set(g.id, g);
+  }
+  const orderedGroupIds = mergeOrderedIds(
+    groupIds,
+    tagGroups.map((g) => g.id)
+  );
+  const orderedTargets = orderedGroupIds
+    .map((id) => manualMap.get(id) ?? tagMap.get(id))
     .filter((g): g is GroupRow => Boolean(g));
   const activeTargetsCount = orderedTargets.length;
   if (activeTargetsCount === 0) {
@@ -231,10 +278,21 @@ async function executeOneAutomation(
   const nextCursor = currentCursor + 1;
   const groupsTargeted = 1;
 
-  const { data: templates, error: templateErr } = await supabase
-    .from("promo_templates")
-    .select("id, content, use_count, last_used_at")
-    .in("id", templateIds);
+  const [manualTemplatesRes, tagTemplatesRes] = await Promise.all([
+    templateIds.length > 0
+      ? supabase
+          .from("promo_templates")
+          .select("id, content, use_count, last_used_at")
+          .in("id", templateIds)
+      : Promise.resolve({ data: [], error: null }),
+    templateTags.length > 0
+      ? supabase
+          .from("promo_templates")
+          .select("id, content, use_count, last_used_at")
+          .overlaps("tags", templateTags)
+      : Promise.resolve({ data: [], error: null }),
+  ]);
+  const templateErr = manualTemplatesRes.error ?? tagTemplatesRes.error;
   if (templateErr) {
     return {
       ...baseResult,
@@ -244,11 +302,25 @@ async function executeOneAutomation(
     };
   }
 
-  const pool = (templates ?? []) as TemplateRow[];
-  const templateMap = new Map<string, TemplateRow>();
-  for (const t of pool) templateMap.set(t.id, t);
-  const orderedTemplates = templateIds
-    .map((id) => templateMap.get(id))
+  const manualTemplates = (manualTemplatesRes.data ?? []) as TemplateRow[];
+  const tagTemplates = [...((tagTemplatesRes.data ?? []) as TemplateRow[])].sort(
+    (a, b) => {
+      const ac = a.content.toLowerCase();
+      const bc = b.content.toLowerCase();
+      if (ac !== bc) return ac.localeCompare(bc);
+      return a.id.localeCompare(b.id);
+    }
+  );
+  const manualTemplateMap = new Map<string, TemplateRow>();
+  for (const t of manualTemplates) manualTemplateMap.set(t.id, t);
+  const tagTemplateMap = new Map<string, TemplateRow>();
+  for (const t of tagTemplates) tagTemplateMap.set(t.id, t);
+  const orderedTemplateIds = mergeOrderedIds(
+    templateIds,
+    tagTemplates.map((t) => t.id)
+  );
+  const orderedTemplates = orderedTemplateIds
+    .map((id) => manualTemplateMap.get(id) ?? tagTemplateMap.get(id))
     .filter((t): t is TemplateRow => Boolean(t));
   const activeTemplatesCount = orderedTemplates.length;
   if (activeTemplatesCount === 0) {
