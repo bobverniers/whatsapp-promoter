@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { checkAuth } from "@/lib/auth";
 import { supabase } from "@/lib/supabase";
+import { normalizeTags } from "@/lib/tags";
 import { normalizeUuidList } from "@/lib/uuids";
 
 function asPositiveInt(value: unknown, fallback: number): number {
@@ -136,6 +137,8 @@ export async function POST(request: Request) {
   const interval_minutes = asPositiveInt(body.interval_minutes, 15);
   const group_ids = normalizeUuidList(body.group_ids);
   const template_ids = normalizeUuidList(body.template_ids);
+  const group_tags = normalizeTags(body.group_tags);
+  const template_tags = normalizeTags(body.template_tags);
   const enabled = typeof body.enabled === "boolean" ? body.enabled : false;
   const schedule_tz = normalizeScheduleTz(body.schedule_tz);
   const win = normalizeActiveHourWindow(
@@ -157,6 +160,8 @@ export async function POST(request: Request) {
       group_rotation_cursor: 0,
       template_ids,
       template_rotation_cursor: 0,
+      group_tags,
+      template_tags,
       schedule_tz,
       active_start_hour: win.start,
       active_end_exclusive: win.endExclusive,
@@ -222,8 +227,16 @@ export async function PATCH(request: Request) {
     updates.group_ids = normalizeUuidList(body.group_ids);
     updates.group_rotation_cursor = 0;
   }
+  if (body.group_tags !== undefined) {
+    updates.group_tags = normalizeTags(body.group_tags);
+    updates.group_rotation_cursor = 0;
+  }
   if (body.template_ids !== undefined) {
     updates.template_ids = normalizeUuidList(body.template_ids);
+    updates.template_rotation_cursor = 0;
+  }
+  if (body.template_tags !== undefined) {
+    updates.template_tags = normalizeTags(body.template_tags);
     updates.template_rotation_cursor = 0;
   }
 

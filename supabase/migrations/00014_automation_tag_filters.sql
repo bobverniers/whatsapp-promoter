@@ -1,0 +1,5 @@
+ALTER TABLE automation_configs
+ADD COLUMN IF NOT EXISTS group_tags TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[];
+
+ALTER TABLE automation_configs
+ADD COLUMN IF NOT EXISTS template_tags TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[];

@@ -9,7 +9,9 @@ type Automation = {
   enabled: boolean;
   interval_minutes: number;
   group_ids: string[] | null;
+  group_tags: string[] | null;
   template_ids: string[] | null;
+  template_tags: string[] | null;
   schedule_tz?: string | null;
   active_start_hour?: number | null;
   active_end_exclusive?: number | null;
@@ -54,7 +56,9 @@ type EditDraft = {
   name: string;
   interval_minutes: number;
   group_ids: string[];
+  group_tags: string[];
   template_ids: string[];
+  template_tags: string[];
   enabled: boolean;
   schedule_tz: string;
   active_start_hour: number | null;
@@ -92,7 +96,9 @@ function emptyDraft(): EditDraft {
     name: "",
     interval_minutes: 15,
     group_ids: [],
+    group_tags: [],
     template_ids: [],
+    template_tags: [],
     enabled: false,
     schedule_tz: "UTC",
     active_start_hour: null,
@@ -152,6 +158,34 @@ function AutomationModal({
     return templates.filter((t) => t.content.toLowerCase().includes(q));
   }, [templateSearch, templates]);
 
+  const groupTagOptions = useMemo(() => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const g of groups) {
+      for (const tag of g.tags ?? []) {
+        const t = tag.trim();
+        if (!t || seen.has(t)) continue;
+        seen.add(t);
+        out.push(t);
+      }
+    }
+    return out.sort((a, b) => a.localeCompare(b));
+  }, [groups]);
+
+  const templateTagOptions = useMemo(() => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const t of templates) {
+      for (const tag of t.tags ?? []) {
+        const normalized = tag.trim();
+        if (!normalized || seen.has(normalized)) continue;
+        seen.add(normalized);
+        out.push(normalized);
+      }
+    }
+    return out.sort((a, b) => a.localeCompare(b));
+  }, [templates]);
+
   function toggleGroup(id: string) {
     const s = new Set(draft.group_ids);
     if (s.has(id)) s.delete(id);
@@ -164,6 +198,20 @@ function AutomationModal({
     if (s.has(id)) s.delete(id);
     else s.add(id);
     setDraft({ ...draft, template_ids: [...s] });
+  }
+
+  function toggleGroupTag(tag: string) {
+    const s = new Set(draft.group_tags);
+    if (s.has(tag)) s.delete(tag);
+    else s.add(tag);
+    setDraft({ ...draft, group_tags: [...s] });
+  }
+
+  function toggleTemplateTag(tag: string) {
+    const s = new Set(draft.template_tags);
+    if (s.has(tag)) s.delete(tag);
+    else s.add(tag);
+    setDraft({ ...draft, template_tags: [...s] });
   }
 
   return (
@@ -323,8 +371,12 @@ function AutomationModal({
             <div className="text-xs text-zinc-500">
               Selected groups: <span className="text-zinc-300">{draft.group_ids.length}</span>
               {" · "}
+              Group tags: <span className="text-zinc-300">{draft.group_tags.length}</span>
+              {" · "}
               Selected templates:{" "}
               <span className="text-zinc-300">{draft.template_ids.length}</span>
+              {" · "}
+              Template tags: <span className="text-zinc-300">{draft.template_tags.length}</span>
             </div>
 
             <div className="mt-6 flex flex-wrap gap-2">
@@ -358,6 +410,32 @@ function AutomationModal({
 
           <section className="rounded-lg border border-zinc-800 bg-zinc-900/30 p-4">
             <h3 className="mb-3 text-sm font-semibold text-zinc-200">
+              Group tags (auto-include matching groups)
+            </h3>
+            <div className="mb-5 flex flex-wrap gap-2">
+              {groupTagOptions.map((tag) => {
+                const checked = draft.group_tags.includes(tag);
+                return (
+                  <button
+                    key={tag}
+                    type="button"
+                    onClick={() => toggleGroupTag(tag)}
+                    className={`rounded-md px-2.5 py-1 text-xs ${
+                      checked
+                        ? "bg-blue-700/70 text-blue-100"
+                        : "bg-zinc-800 text-zinc-300 hover:bg-zinc-700"
+                    }`}
+                  >
+                    {tag}
+                  </button>
+                );
+              })}
+              {groupTagOptions.length === 0 && (
+                <p className="text-xs text-zinc-500">No group tags found.</p>
+              )}
+            </div>
+
+            <h3 className="mb-3 text-sm font-semibold text-zinc-200">
               Groups (manual selection)
             </h3>
             <input
@@ -368,14 +446,33 @@ function AutomationModal({
             />
             <div className="max-h-60 overflow-y-auto rounded-md border border-zinc-800">
               {filteredGroups.map((g) => {
-                const checked = draft.group_ids.includes(g.id);
+                const manualChecked = draft.group_ids.includes(g.id);
+                const viaTag = (g.tags ?? []).some((tag) =>
+                  draft.group_tags.includes(tag)
+                );
+                const checked = manualChecked || viaTag;
                 return (
                   <label
                     key={g.id}
                     className="flex cursor-pointer items-center justify-between border-b border-zinc-800 px-3 py-2 text-sm last:border-0 hover:bg-zinc-900/50"
                   >
-                    <span className="min-w-0 truncate pr-2">
-                      {g.name ?? g.whapi_id}
+                    <span className="flex min-w-0 items-center gap-2 pr-2">
+                      <span className="min-w-0 truncate">{g.name ?? g.whapi_id}</span>
+                      {viaTag && (
+                        <span className="shrink-0 rounded bg-blue-900/60 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-blue-200">
+                          via tag
+                        </span>
+                      )}
+                      {manualChecked && !viaTag && (
+                        <span className="shrink-0 rounded bg-zinc-700 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-zinc-300">
+                          manual
+                        </span>
+                      )}
+                      {manualChecked && viaTag && (
+                        <span className="shrink-0 rounded bg-emerald-900/60 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-emerald-200">
+                          both
+                        </span>
+                      )}
                     </span>
                     <input
                       type="checkbox"
@@ -391,6 +488,32 @@ function AutomationModal({
             </div>
 
             <h3 className="mb-3 mt-6 text-sm font-semibold text-zinc-200">
+              Template tags (auto-include matching templates)
+            </h3>
+            <div className="mb-5 flex flex-wrap gap-2">
+              {templateTagOptions.map((tag) => {
+                const checked = draft.template_tags.includes(tag);
+                return (
+                  <button
+                    key={tag}
+                    type="button"
+                    onClick={() => toggleTemplateTag(tag)}
+                    className={`rounded-md px-2.5 py-1 text-xs ${
+                      checked
+                        ? "bg-blue-700/70 text-blue-100"
+                        : "bg-zinc-800 text-zinc-300 hover:bg-zinc-700"
+                    }`}
+                  >
+                    {tag}
+                  </button>
+                );
+              })}
+              {templateTagOptions.length === 0 && (
+                <p className="text-xs text-zinc-500">No template tags found.</p>
+              )}
+            </div>
+
+            <h3 className="mb-3 mt-6 text-sm font-semibold text-zinc-200">
               Templates (rotation pool)
             </h3>
             <input
@@ -401,14 +524,37 @@ function AutomationModal({
             />
             <div className="max-h-60 overflow-y-auto rounded-md border border-zinc-800">
               {filteredTemplates.map((t) => {
-                const checked = draft.template_ids.includes(t.id);
+                const manualChecked = draft.template_ids.includes(t.id);
+                const viaTag = (t.tags ?? []).some((tag) =>
+                  draft.template_tags.includes(tag)
+                );
+                const checked = manualChecked || viaTag;
                 return (
                   <label
                     key={t.id}
                     className="flex cursor-pointer items-start justify-between gap-3 border-b border-zinc-800 px-3 py-2 text-sm last:border-0 hover:bg-zinc-900/50"
                   >
-                    <span className="line-clamp-2 min-w-0 flex-1 whitespace-pre-wrap text-zinc-300">
-                      {t.content}
+                    <span className="min-w-0 flex-1">
+                      <span className="line-clamp-2 block whitespace-pre-wrap text-zinc-300">
+                        {t.content}
+                      </span>
+                      <span className="mt-1 flex flex-wrap gap-1">
+                        {viaTag && (
+                          <span className="rounded bg-blue-900/60 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-blue-200">
+                            via tag
+                          </span>
+                        )}
+                        {manualChecked && !viaTag && (
+                          <span className="rounded bg-zinc-700 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-zinc-300">
+                            manual
+                          </span>
+                        )}
+                        {manualChecked && viaTag && (
+                          <span className="rounded bg-emerald-900/60 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-emerald-200">
+                            both
+                          </span>
+                        )}
+                      </span>
                     </span>
                     <input
                       type="checkbox"
@@ -487,7 +633,9 @@ export default function AutomationsPage() {
       name: a.name,
       interval_minutes: a.interval_minutes || 15,
       group_ids: a.group_ids ?? [],
+      group_tags: a.group_tags ?? [],
       template_ids: a.template_ids ?? [],
+      template_tags: a.template_tags ?? [],
       enabled: a.enabled,
       schedule_tz: a.schedule_tz?.trim()
         ? a.schedule_tz.trim()
