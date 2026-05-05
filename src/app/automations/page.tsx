@@ -8,6 +8,7 @@ type Automation = {
   name: string;
   enabled: boolean;
   interval_minutes: number;
+  interval_mode?: string | null;
   group_ids: string[] | null;
   group_tags: string[] | null;
   template_ids: string[] | null;
@@ -55,6 +56,7 @@ type EditDraft = {
   id?: string;
   name: string;
   interval_minutes: number;
+  interval_mode: string;
   group_ids: string[];
   group_tags: string[];
   template_ids: string[];
@@ -65,7 +67,13 @@ type EditDraft = {
   active_end_exclusive: number | null;
 };
 
-const INTERVAL_OPTIONS = [5, 15, 30, 60, 180];
+const INTERVAL_OPTIONS = [
+  { value: "fixed_5m", label: "Every 5 minutes" },
+  { value: "jitter_2_5_3_5h", label: "Every 2.5-3.5 hours" },
+  { value: "jitter_3_5_4_5h", label: "Every 3.5-4.5 hours" },
+  { value: "jitter_4_5_5_5h", label: "Every 4.5-5.5 hours" },
+  { value: "jitter_6_8h", label: "Every 6-8 hours" },
+] as const;
 
 const COMMON_TIME_ZONES = [
   "UTC",
@@ -94,7 +102,8 @@ function api(path: string, opts: RequestInit = {}) {
 function emptyDraft(): EditDraft {
   return {
     name: "",
-    interval_minutes: 15,
+    interval_minutes: 5,
+    interval_mode: "fixed_5m",
     group_ids: [],
     group_tags: [],
     template_ids: [],
@@ -244,18 +253,19 @@ function AutomationModal({
               Interval
             </label>
             <select
-              value={draft.interval_minutes}
+              value={draft.interval_mode}
               onChange={(e) =>
                 setDraft({
                   ...draft,
-                  interval_minutes: Number(e.target.value) || 15,
+                  interval_mode: e.target.value,
+                  interval_minutes: e.target.value === "fixed_5m" ? 5 : 180,
                 })
               }
               className="mb-4 w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm outline-none focus:border-blue-500"
             >
-              {INTERVAL_OPTIONS.map((mins) => (
-                <option key={mins} value={mins}>
-                  Every {mins} minute{mins === 1 ? "" : "s"}
+              {INTERVAL_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
                 </option>
               ))}
             </select>
@@ -631,7 +641,8 @@ export default function AutomationsPage() {
     setDraft({
       id: a.id,
       name: a.name,
-      interval_minutes: a.interval_minutes || 15,
+      interval_minutes: a.interval_minutes || 5,
+      interval_mode: a.interval_mode?.trim() ? a.interval_mode : "fixed_5m",
       group_ids: a.group_ids ?? [],
       group_tags: a.group_tags ?? [],
       template_ids: a.template_ids ?? [],

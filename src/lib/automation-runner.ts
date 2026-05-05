@@ -6,6 +6,7 @@ export type AutomationRow = {
   name: string;
   enabled: boolean;
   interval_minutes: number | null;
+  interval_mode?: string | null;
   group_ids: string[] | null;
   group_tags?: string[] | null;
   group_rotation_cursor?: number | null;
@@ -99,14 +100,57 @@ function buildMessageBody(templateContent: string, promoLink?: string) {
 }
 
 function isDue(nowMs: number, row: AutomationRow): boolean {
-  const mins =
-    typeof row.interval_minutes === "number" && row.interval_minutes > 0
-      ? row.interval_minutes
-      : 15;
+  const [minMinutes, maxMinutes] = intervalRangeMinutes(row);
   if (!row.last_run_at) return true;
   const last = new Date(row.last_run_at).getTime();
   if (!Number.isFinite(last)) return true;
-  return nowMs - last >= mins * 60_000;
+  const dueMinutes = pickDeterministicMinutes(
+    row.id,
+    row.last_run_at,
+    minMinutes,
+    maxMinutes
+  );
+  return nowMs - last >= dueMinutes * 60_000;
+}
+
+function intervalRangeMinutes(row: AutomationRow): [number, number] {
+  switch (row.interval_mode) {
+    case "fixed_5m":
+      return [5, 5];
+    case "jitter_2_5_3_5h":
+      return [150, 210];
+    case "jitter_3_5_4_5h":
+      return [210, 270];
+    case "jitter_4_5_5_5h":
+      return [270, 330];
+    case "jitter_6_8h":
+      return [360, 480];
+    default: {
+      const mins =
+        typeof row.interval_minutes === "number" && row.interval_minutes > 0
+          ? row.interval_minutes
+          : 15;
+      return [mins, mins];
+    }
+  }
+}
+
+function pickDeterministicMinutes(
+  automationId: string,
+  lastRunAt: string,
+  minMinutes: number,
+  maxMinutes: number
+): number {
+  if (maxMinutes <= minMinutes) return minMinutes;
+  const seed = `${automationId}:${lastRunAt}`;
+  let hash = 2166136261;
+  for (let i = 0; i < seed.length; i += 1) {
+    hash ^= seed.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  const normalized = (hash >>> 0) / 4294967295;
+  const delta = maxMinutes - minMinutes;
+  return minMinutes + normalized * delta;
 }
 
 function localWallHour(now: Date, timeZone: string): number | null {

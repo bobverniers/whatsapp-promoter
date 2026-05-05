@@ -4,6 +4,22 @@ import { supabase } from "@/lib/supabase";
 import { normalizeTags } from "@/lib/tags";
 import { normalizeUuidList } from "@/lib/uuids";
 
+const INTERVAL_MODES = [
+  "fixed_5m",
+  "jitter_2_5_3_5h",
+  "jitter_3_5_4_5h",
+  "jitter_4_5_5_5h",
+  "jitter_6_8h",
+] as const;
+type IntervalMode = (typeof INTERVAL_MODES)[number];
+
+function normalizeIntervalMode(value: unknown): IntervalMode {
+  if (typeof value === "string" && INTERVAL_MODES.includes(value as IntervalMode)) {
+    return value as IntervalMode;
+  }
+  return "fixed_5m";
+}
+
 function asPositiveInt(value: unknown, fallback: number): number {
   if (typeof value === "number" && Number.isFinite(value) && value > 0) {
     return Math.floor(value);
@@ -134,7 +150,8 @@ export async function POST(request: Request) {
     typeof body.name === "string" && body.name.trim()
       ? body.name.trim()
       : "New automation";
-  const interval_minutes = asPositiveInt(body.interval_minutes, 15);
+  const interval_mode = normalizeIntervalMode(body.interval_mode);
+  const interval_minutes = interval_mode === "fixed_5m" ? 5 : asPositiveInt(body.interval_minutes, 180);
   const group_ids = normalizeUuidList(body.group_ids);
   const template_ids = normalizeUuidList(body.template_ids);
   const group_tags = normalizeTags(body.group_tags);
@@ -155,6 +172,7 @@ export async function POST(request: Request) {
     .insert({
       name,
       enabled,
+      interval_mode,
       interval_minutes,
       group_ids,
       group_rotation_cursor: 0,
@@ -222,6 +240,13 @@ export async function PATCH(request: Request) {
   }
   if (body.interval_minutes !== undefined) {
     updates.interval_minutes = asPositiveInt(body.interval_minutes, 15);
+  }
+  if (body.interval_mode !== undefined) {
+    const nextMode = normalizeIntervalMode(body.interval_mode);
+    updates.interval_mode = nextMode;
+    if (nextMode === "fixed_5m") {
+      updates.interval_minutes = 5;
+    }
   }
   if (body.group_ids !== undefined) {
     updates.group_ids = normalizeUuidList(body.group_ids);
