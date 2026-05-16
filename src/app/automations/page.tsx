@@ -2,6 +2,11 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import {
+  canonicalIntervalMinutes,
+  INTERVAL_OPTIONS,
+  normalizeIntervalMode,
+} from "@/lib/automation-intervals";
 
 type Automation = {
   id: string;
@@ -66,14 +71,6 @@ type EditDraft = {
   active_start_hour: number | null;
   active_end_exclusive: number | null;
 };
-
-const INTERVAL_OPTIONS = [
-  { value: "fixed_5m", label: "Every 5 minutes" },
-  { value: "jitter_2_5_3_5h", label: "Every 2.5-3.5 hours" },
-  { value: "jitter_3_5_4_5h", label: "Every 3.5-4.5 hours" },
-  { value: "jitter_4_5_5_5h", label: "Every 4.5-5.5 hours" },
-  { value: "jitter_6_8h", label: "Every 6-8 hours" },
-] as const;
 
 const COMMON_TIME_ZONES = [
   "UTC",
@@ -254,13 +251,14 @@ function AutomationModal({
             </label>
             <select
               value={draft.interval_mode}
-              onChange={(e) =>
+              onChange={(e) => {
+                const mode = normalizeIntervalMode(e.target.value);
                 setDraft({
                   ...draft,
-                  interval_mode: e.target.value,
-                  interval_minutes: e.target.value === "fixed_5m" ? 5 : 180,
-                })
-              }
+                  interval_mode: mode,
+                  interval_minutes: canonicalIntervalMinutes(mode),
+                });
+              }}
               className="mb-4 w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm outline-none focus:border-blue-500"
             >
               {INTERVAL_OPTIONS.map((opt) => (

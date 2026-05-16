@@ -1,3 +1,4 @@
+import { intervalRangeMinutes } from "@/lib/automation-intervals";
 import { supabase } from "@/lib/supabase";
 import { looksLikeKickOrForbidden, sendWhapiText } from "@/lib/whapi-send";
 
@@ -100,7 +101,10 @@ function buildMessageBody(templateContent: string, promoLink?: string) {
 }
 
 function isDue(nowMs: number, row: AutomationRow): boolean {
-  const [minMinutes, maxMinutes] = intervalRangeMinutes(row);
+  const [minMinutes, maxMinutes] = intervalRangeMinutes(
+    row.interval_mode,
+    row.interval_minutes
+  );
   if (!row.last_run_at) return true;
   const last = new Date(row.last_run_at).getTime();
   if (!Number.isFinite(last)) return true;
@@ -111,28 +115,6 @@ function isDue(nowMs: number, row: AutomationRow): boolean {
     maxMinutes
   );
   return nowMs - last >= dueMinutes * 60_000;
-}
-
-function intervalRangeMinutes(row: AutomationRow): [number, number] {
-  switch (row.interval_mode) {
-    case "fixed_5m":
-      return [5, 5];
-    case "jitter_2_5_3_5h":
-      return [150, 210];
-    case "jitter_3_5_4_5h":
-      return [210, 270];
-    case "jitter_4_5_5_5h":
-      return [270, 330];
-    case "jitter_6_8h":
-      return [360, 480];
-    default: {
-      const mins =
-        typeof row.interval_minutes === "number" && row.interval_minutes > 0
-          ? row.interval_minutes
-          : 15;
-      return [mins, mins];
-    }
-  }
 }
 
 function pickDeterministicMinutes(
