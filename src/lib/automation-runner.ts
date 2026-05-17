@@ -1,4 +1,5 @@
 import { intervalRangeMinutes } from "@/lib/automation-intervals";
+import { buildStableRotationOrder } from "@/lib/rotation-order";
 import { supabase } from "@/lib/supabase";
 import { looksLikeKickOrForbidden, sendWhapiText } from "@/lib/whapi-send";
 
@@ -11,9 +12,11 @@ export type AutomationRow = {
   group_ids: string[] | null;
   group_tags?: string[] | null;
   group_rotation_cursor?: number | null;
+  group_rotation_order?: string[] | null;
   template_ids: string[] | null;
   template_tags?: string[] | null;
   template_rotation_cursor?: number | null;
+  template_rotation_order?: string[] | null;
   schedule_tz?: string | null;
   active_start_hour?: number | null;
   active_end_exclusive?: number | null;
@@ -276,9 +279,26 @@ async function executeOneAutomation(
   for (const g of tagGroups) {
     tagMap.set(g.id, g);
   }
-  const orderedGroupIds = mergeOrderedIds(
+  const bootstrapGroupOrder = mergeOrderedIds(
     groupIds,
     tagGroups.map((g) => g.id)
+  );
+  const eligibleGroupIds = bootstrapGroupOrder;
+  const groupLabel = (id: string) => {
+    const g = manualMap.get(id) ?? tagMap.get(id);
+    return g?.name ?? g?.whapi_id ?? id;
+  };
+  const orderedGroupIds = buildStableRotationOrder(
+    asStringArray(row.group_rotation_order),
+    eligibleGroupIds,
+    bootstrapGroupOrder,
+    (ids) =>
+      [...ids].sort((a, b) => {
+        const an = groupLabel(a).toLowerCase();
+        const bn = groupLabel(b).toLowerCase();
+        if (an !== bn) return an.localeCompare(bn);
+        return a.localeCompare(b);
+      })
   );
   const orderedTargets = orderedGroupIds
     .map((id) => manualMap.get(id) ?? tagMap.get(id))
@@ -341,9 +361,25 @@ async function executeOneAutomation(
   for (const t of manualTemplates) manualTemplateMap.set(t.id, t);
   const tagTemplateMap = new Map<string, TemplateRow>();
   for (const t of tagTemplates) tagTemplateMap.set(t.id, t);
-  const orderedTemplateIds = mergeOrderedIds(
+  const bootstrapTemplateOrder = mergeOrderedIds(
     templateIds,
     tagTemplates.map((t) => t.id)
+  );
+  const templateLabel = (id: string) => {
+    const t = manualTemplateMap.get(id) ?? tagTemplateMap.get(id);
+    return t?.content ?? id;
+  };
+  const orderedTemplateIds = buildStableRotationOrder(
+    asStringArray(row.template_rotation_order),
+    bootstrapTemplateOrder,
+    bootstrapTemplateOrder,
+    (ids) =>
+      [...ids].sort((a, b) => {
+        const ac = templateLabel(a).toLowerCase();
+        const bc = templateLabel(b).toLowerCase();
+        if (ac !== bc) return ac.localeCompare(bc);
+        return a.localeCompare(b);
+      })
   );
   const orderedTemplates = orderedTemplateIds
     .map((id) => manualTemplateMap.get(id) ?? tagTemplateMap.get(id))
@@ -456,7 +492,9 @@ async function executeOneAutomation(
       last_run_at: nowIso,
       updated_at: nowIso,
       group_rotation_cursor: nextCursor,
+      group_rotation_order: orderedGroupIds,
       template_rotation_cursor: nextTemplateCursor,
+      template_rotation_order: orderedTemplateIds,
     })
     .eq("id", row.id);
 

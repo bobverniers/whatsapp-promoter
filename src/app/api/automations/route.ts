@@ -236,19 +236,15 @@ export async function PATCH(request: Request) {
   }
   if (body.group_ids !== undefined) {
     updates.group_ids = normalizeUuidList(body.group_ids);
-    updates.group_rotation_cursor = 0;
   }
   if (body.group_tags !== undefined) {
     updates.group_tags = normalizeTags(body.group_tags);
-    updates.group_rotation_cursor = 0;
   }
   if (body.template_ids !== undefined) {
     updates.template_ids = normalizeUuidList(body.template_ids);
-    updates.template_rotation_cursor = 0;
   }
   if (body.template_tags !== undefined) {
     updates.template_tags = normalizeTags(body.template_tags);
-    updates.template_rotation_cursor = 0;
   }
 
   const { data, error } = await supabase
