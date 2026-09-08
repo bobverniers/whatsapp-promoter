@@ -64,6 +64,24 @@ type TemplateRow = {
   last_used_at: string | null;
 };
 
+/** Locked/kicked chats tried in one run before giving up. */
+const MAX_SEND_ATTEMPTS = 5;
+
+async function deactivateLockedGroup(
+  group: GroupRow,
+  automationName: string,
+  status: number,
+  nowIso: string
+) {
+  await supabase
+    .from("external_groups")
+    .update({
+      is_active: false,
+      status_notes: `Automation ${automationName}: Whapi ${status} at ${nowIso}`,
+    })
+    .eq("id", group.id);
+}
+
 function asStringArray(v: unknown): string[] {
   if (!Array.isArray(v)) return [];
   return v.filter((x): x is string => typeof x === "string");
@@ -204,6 +222,7 @@ async function executeOneAutomation(
   let runId: string | null = null;
   let groupsSent = 0;
   let groupsFailed = 0;
+  let groupsTargeted = 0;
   let templateId: string | null = null;
   let sentGroupChat: string | null = null;
 
@@ -318,11 +337,9 @@ async function executeOneAutomation(
     row.group_rotation_cursor >= 0
       ? Math.floor(row.group_rotation_cursor)
       : 0;
-  const chosenIdx = currentCursor % orderedTargets.length;
-  const chosenTarget = orderedTargets[chosenIdx];
-  const chosenGroupChat = chosenTarget.name ?? chosenTarget.whapi_id;
-  const nextCursor = currentCursor + 1;
-  const groupsTargeted = 1;
+  const startIdx = currentCursor % orderedTargets.length;
+  const firstTarget = orderedTargets[startIdx];
+  const firstGroupChat = firstTarget.name ?? firstTarget.whapi_id;
 
   const [manualTemplatesRes, tagTemplatesRes] = await Promise.all([
     templateIds.length > 0
@@ -342,7 +359,6 @@ async function executeOneAutomation(
   if (templateErr) {
     return {
       ...baseResult,
-      groupsTargeted,
       status: "failed",
       reason: `Failed to load templates: ${templateErr.message}`,
     };
@@ -388,7 +404,6 @@ async function executeOneAutomation(
   if (activeTemplatesCount === 0) {
     return {
       ...baseResult,
-      groupsTargeted,
       status: "failed",
       reason: "No template from selected pool was found",
     };
@@ -401,11 +416,9 @@ async function executeOneAutomation(
       : 0;
   const chosenTemplateIdx = currentTemplateCursor % activeTemplatesCount;
   const selected = orderedTemplates[chosenTemplateIdx];
-  const nextTemplateCursor = currentTemplateCursor + 1;
   if (!selected) {
     return {
       ...baseResult,
-      groupsTargeted,
       status: "failed",
       reason: "No template from selected pool was found",
     };
@@ -416,7 +429,6 @@ async function executeOneAutomation(
   if (!built.ok) {
     return {
       ...baseResult,
-      groupsTargeted,
       templateId,
       status: "failed",
       reason: built.error,
@@ -432,7 +444,7 @@ async function executeOneAutomation(
       groups_targeted: 1,
       groups_sent: 0,
       groups_failed: 0,
-      group_chat: chosenGroupChat,
+      group_chat: firstGroupChat,
       message_sent: built.body,
     })
     .select("id")
@@ -440,7 +452,6 @@ async function executeOneAutomation(
   if (runIns.error || !runIns.data) {
     return {
       ...baseResult,
-      groupsTargeted,
       templateId,
       status: "failed",
       reason: `Failed to create run log: ${runIns.error?.message ?? "unknown"}`,
@@ -448,32 +459,59 @@ async function executeOneAutomation(
   }
   runId = runIns.data.id;
 
-  const send = await sendWhapiText(token, chosenTarget.whapi_id, built.body);
-  if (!send.ok) {
-    groupsFailed = 1;
-    messages.push(
-      `Send failed for ${chosenTarget.name ?? chosenTarget.whapi_id}: HTTP ${send.status}`
-    );
-    if (looksLikeKickOrForbidden(send.status)) {
+  const deactivatedIds = new Set<string>();
+  const seenIds = new Set<string>();
+  let lastAttempted: GroupRow | null = null;
+  let sentTarget: GroupRow | null = null;
+  const attemptLimit = Math.min(MAX_SEND_ATTEMPTS, orderedTargets.length);
+
+  for (let attempt = 0; attempt < attemptLimit; attempt += 1) {
+    const target =
+      orderedTargets[(startIdx + attempt) % orderedTargets.length];
+    if (seenIds.has(target.id)) break;
+    seenIds.add(target.id);
+    lastAttempted = target;
+    groupsTargeted += 1;
+    const label = target.name ?? target.whapi_id;
+
+    const send = await sendWhapiText(token, target.whapi_id, built.body);
+    if (send.ok) {
+      groupsSent = 1;
+      sentGroupChat = label;
+      sentTarget = target;
       await supabase
         .from("external_groups")
-        .update({
-          is_active: false,
-          status_notes: `Automation ${row.name}: Whapi ${send.status} at ${nowIso}`,
-        })
-        .eq("id", chosenTarget.id);
+        .update({ last_promoted_at: nowIso })
+        .eq("id", target.id);
+      break;
     }
-  } else {
-    groupsSent = 1;
-    sentGroupChat = chosenGroupChat;
-    await supabase
-      .from("external_groups")
-      .update({ last_promoted_at: nowIso })
-      .eq("id", chosenTarget.id);
+
+    groupsFailed += 1;
+    messages.push(`Send failed for ${label}: HTTP ${send.status}`);
+
+    if (!looksLikeKickOrForbidden(send.status)) {
+      break;
+    }
+
+    deactivatedIds.add(target.id);
+    await deactivateLockedGroup(target, row.name, send.status, nowIso);
+    messages.push(`Skipped locked chat ${label}; trying next group`);
   }
 
+  const remainingOrder = orderedGroupIds.filter(
+    (id) => !deactivatedIds.has(id)
+  );
+  const cursorAnchorId = sentTarget?.id ?? lastAttempted?.id;
+  const lastIdx =
+    cursorAnchorId && !deactivatedIds.has(cursorAnchorId)
+      ? remainingOrder.indexOf(cursorAnchorId)
+      : -1;
+  const nextCursor = lastIdx >= 0 ? lastIdx + 1 : 0;
+  const nextTemplateCursor =
+    groupsSent > 0 ? currentTemplateCursor + 1 : currentTemplateCursor;
+
   let status: "success" | "partial" | "failed" = "failed";
-  if (groupsSent === 1) status = "success";
+  if (groupsSent === 1 && groupsFailed === 0) status = "success";
   else if (groupsSent > 0) status = "partial";
 
   if (groupsSent > 0) {
@@ -492,7 +530,7 @@ async function executeOneAutomation(
       last_run_at: nowIso,
       updated_at: nowIso,
       group_rotation_cursor: nextCursor,
-      group_rotation_order: orderedGroupIds,
+      group_rotation_order: remainingOrder,
       template_rotation_cursor: nextTemplateCursor,
       template_rotation_order: orderedTemplateIds,
     })
@@ -503,9 +541,10 @@ async function executeOneAutomation(
     .update({
       finished_at: nowIso,
       status,
+      groups_targeted: groupsTargeted,
       groups_sent: groupsSent,
       groups_failed: groupsFailed,
-      group_chat: sentGroupChat ?? chosenGroupChat,
+      group_chat: sentGroupChat ?? lastAttempted?.name ?? lastAttempted?.whapi_id,
       error_summary: groupsFailed > 0 ? messages.join("; ").slice(0, 5000) : null,
     })
     .eq("id", runId);
